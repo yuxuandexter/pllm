@@ -46,9 +46,10 @@ python3 verification/pd-disagg/trace/check.py --out "$PWD/check-output"
 # Run bounded TLC model checking on PdCore.tla (64 actions, 54 inductive invariants)
 TLA2TOOLS_JAR=/path/to/tla2tools.jar python3 verification/pd-disagg/spec/check.py --out "$PWD/model-output"
 
-# Check the packaged TLAPS proof sources and sample a module
+# Check the packaged TLAPS proofs: static checks, one module, or a full parallel recheck
 verification/pd-disagg/proofs/verify.sh --static
 verification/pd-disagg/proofs/verify.sh --module PdABBQBase --out proof-review
+verification/pd-disagg/proofs/verify.sh --all --jobs 16 --slice-large --out proof-all
 ```
 
 ## Architecture
