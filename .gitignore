@@ -10,6 +10,7 @@ __pycache__/
 # json files
 *.json
 !verification/pd-disagg/trace/prompts.json
+!verification/pd-disagg/address/results.json
 *.jsonl
 
 # profiling data

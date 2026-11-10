@@ -46,4 +46,4 @@ quarantine still does not satisfy eventual `Free`.
 Historical PdCore checks and a contract-level progress proof support these
 conditions. Unrestricted PdCore liveness and global emptiness under arbitrary
 arrivals remain unproved. The 11 Z3 predictions were rechecked after renaming;
-final PdCore proofs remain pending.
+the completed [PdCore safety proofs](../../proofs/README.md) are available.

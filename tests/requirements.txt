@@ -13,3 +13,4 @@ requests>=2
 einops>=0.8
 sentencepiece>=0.2
 protobuf>=5
+z3-solver==5.3.3.0

@@ -1,5 +1,7 @@
 # PdCore safety proof
 
+The [Z3 address arithmetic suite](../address/README.md) checks KV layout and copy arithmetic.
+
 ## The theorem
 
 The root theorem in `source/PdCore_Proof.tla` is:

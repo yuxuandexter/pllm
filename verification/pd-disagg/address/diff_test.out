@@ -1,0 +1,3 @@
+trials=3000 blocks=166364 merged=55662 mismatches=0
+selfcheck={'slab_stride_numpages': 875, 'pb_no_itemsize': 686}
+multi_page_guard_checks=36
