@@ -99,10 +99,10 @@ class RadixCacheHandle(BaseCacheHandle):
 
 
 class RadixPrefixCache(BasePrefixCache):
-    def __init__(self, device: torch.device):
+    def __init__(self, device: torch.device, page_size: int | None = None):
         super().__init__()
         self.device = device
-        self.page_size = get_global_ctx().page_size
+        self.page_size = get_global_ctx().page_size if page_size is None else page_size
         self.key_fn = _get_key_fn(self.page_size)
         self.empty_tensor = torch.empty(0, dtype=torch.int32, device=device)
         self.evictable_size = 0

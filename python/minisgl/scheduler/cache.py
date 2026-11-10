@@ -71,7 +71,12 @@ class CacheManager:
         # unlock until all operations on handle is done
         self.unlock(old_handle)
         # this part is already in the prefix cache, free it
-        self._free(page_indices[old_handle.cached_len : cached_len])
+        duplicates = page_indices[old_handle.cached_len : cached_len].clone()
+        if cached_len > old_handle.cached_len:
+            # Upstream radix-dedup-page-table-remap: live page-table rows must point at canonical pages
+            # before duplicates return to the allocator (including lazy-free regions).
+            page_indices[:cached_len].copy_(new_handle.get_matched_indices()[:cached_len])
+        self._free(duplicates)
         if finished:  # this tail part should be freed
             self._free(page_indices[new_handle.cached_len :])
         else:  # keep the tail part, update the handle

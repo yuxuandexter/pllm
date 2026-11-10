@@ -58,7 +58,10 @@ class PrefillAdder:
             device_ids = self.table_manager.token_pool[table_idx][:cached_len]
             page_entry = self.table_manager.page_table[table_idx][:cached_len]
             device_ids.copy_(req.input_ids[:cached_len].pin_memory(), non_blocking=True)
-            page_entry.copy_(handle.get_matched_indices())
+            if not getattr(self.cache_manager, "radix", False):
+                page_entry.copy_(handle.get_matched_indices())
+        if getattr(self.cache_manager, "radix", False):
+            self.cache_manager.admit(table_idx, req, handle)
 
         return handle, table_idx
 

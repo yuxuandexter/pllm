@@ -78,7 +78,11 @@ class FIMetadata(BaseAttnMetadata):
 
 
 class FlashInferBackend(BaseAttnBackend):
-    def __init__(self, config: ModelConfig) -> None:
+    # PD mode (ledger kernel read pins): prepare_metadata takes the kernel arguments the ledger core computed
+    # (batch.pd_kargs, disagg/scheduler_pd.py) instead of gathering them from the page table
+    takes_pd_kargs = True
+
+    def __init__(self, config: ModelConfig, workspace_mb: int = 128) -> None:
         from flashinfer import (
             BatchDecodeWithPagedKVCacheWrapper,
             BatchPrefillWithPagedKVCacheWrapper,
@@ -87,9 +91,13 @@ class FlashInferBackend(BaseAttnBackend):
         self.config = config
         self.kvcache = get_global_ctx().kv_cache
         self.device = self.kvcache.device
+        # one float workspace shared by the prefill, decode and CUDA-graph decode wrappers
+        # (prepare_for_capture passes the same buffer); size from --attention-workspace-mb
+        self.workspace_bytes = int(workspace_mb) * 1024 * 1024
         self.float_workspace_buffer = torch.empty(
-            128 * 1024 * 1024, dtype=torch.uint8, device=self.device
+            self.workspace_bytes, dtype=torch.uint8, device=self.device
         )
+        logger.info_rank0(f"FlashInfer float workspace: {workspace_mb} MiB")
         self.prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
             kv_layout="NHD",
@@ -188,6 +196,9 @@ class FlashInferBackend(BaseAttnBackend):
         return metadata.wrapper.run(q=q, paged_kv_cache=kv_cache)
 
     def prepare_metadata(self, batch: Batch) -> None:
+        kargs = getattr(batch, "pd_kargs", None)
+        if kargs is not None:  # PD mode only: the arrays come from the ledger core
+            return self._prepare_metadata_pd(batch, kargs)
         reqs = batch.padded_reqs
 
         padded_size = len(reqs)
@@ -220,6 +231,32 @@ class FlashInferBackend(BaseAttnBackend):
             page_size=1,
             pos_encoding_mode="NONE",
             seq_lens_cpu=seq_len_cpu,
+            dtype=self.kvcache.dtype,
+            wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
+        )
+
+    def _prepare_metadata_pd(self, batch: Batch, kargs) -> None:
+        """ledger kernel read pins (kernel argument contract): the same FIMetadata as above, every index array taken from
+        the ledger core's k_launch (``disagg.scheduler_pd.PDKArgs``): indptr = cu_seqlens_k,
+        indices = the token slots of each row, qo_indptr = cu_seqlens_q (equal to all three
+        cases above), last_page_len = 1, seq_lens = indptr differences; padding rows read the
+        dummy slot.  plan() copies them into its own buffers or the CUDA-graph buffers."""
+        padded_size = len(batch.padded_reqs)
+        if kargs.rows != padded_size or (batch.is_decode and kargs.nq != padded_size):
+            raise RuntimeError(f"PD kernel arguments: {kargs.rows} rows / {kargs.nq} queries for "
+                               f"a {batch.phase} batch of {padded_size} rows")
+        batch.attn_metadata = FIMetadata(
+            cu_seqlens_q_cpu=kargs.qo_indptr_cpu,
+            cu_seqlens_k_cpu=kargs.indptr_cpu,
+            cu_seqlens_q_gpu=kargs.qo_indptr,
+            indices=kargs.indices,
+            last_page_len_cpu=kargs.last_page_len_cpu,
+            num_qo_heads=self.qo_head_local,
+            num_kv_heads=self.kv_head_local,
+            head_dim=self.config.head_dim,
+            page_size=1,
+            pos_encoding_mode="NONE",
+            seq_lens_cpu=kargs.seq_lens_cpu,
             dtype=self.kvcache.dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
@@ -269,3 +306,20 @@ class FlashInferBackend(BaseAttnBackend):
         assert self.capture is not None and bs in self.capture_bs
         metadata.wrapper = self.graph_wrappers[bs]
         self._initialize_metadata_once(metadata)
+
+
+# Rows of flashinfer's split-KV prefill scratch per prefill token, observed on GB200 in the PD prototype
+# GPU batch 2 (Qwen3-32B, 8192-token prefill batch): batch_prefill_tmp_v needed 146,800,640 B
+# = 64 qo heads x 4480 rows x 128 x 4 B.  flashinfer sizes it inside plan() from the device grid
+# (include/flashinfer/attention/scheduler.cuh:772-776 in flashinfer 0.6.11.post2, the version of
+# the GPU env minisgl-cuda130-fi0611: "batch_prefill_tmp_v" = num_qo_heads x padded_batch_size x
+# cta_tile_q x head_dim_vo x 4 B, "batch_prefill_tmp_s" = the same without head_dim_vo) and does
+# not expose the size to Python, so this is a rule of thumb.
+_OBSERVED_ROWS_PER_TOKEN = 4480 / 8192
+
+
+def estimate_prefill_workspace_bytes(num_qo_heads: int, head_dim: int, max_tokens: int) -> int:
+    """Empirical size of tmp_v + tmp_s for a prefill batch of ``max_tokens`` tokens."""
+    rows = math.ceil(max_tokens * _OBSERVED_ROWS_PER_TOKEN)
+    tmp_v = num_qo_heads * rows * head_dim * 4
+    return tmp_v + num_qo_heads * rows * 4  # + tmp_s

@@ -9,7 +9,7 @@ from typing import Callable, Dict, List, Literal, Tuple
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from minisgl.core import SamplingParams
 from minisgl.env import ENV
 from minisgl.message import (
@@ -54,6 +54,11 @@ class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int
     ignore_eos: bool = False
+    # PD disaggregation: set by the router (python/minisgl/disagg/router.py)
+    bootstrap_host: str | None = None
+    bootstrap_port: int | None = None
+    bootstrap_room: int | None = None
+    rid: str | None = None  # client request id, logged end to end (compatibility)
 
 
 class Message(BaseModel):
@@ -138,6 +143,8 @@ class FrontendManager:
             await event.wait()
             event.clear()
 
+            if uid not in self.ack_map:  # aborted (e.g. the client went away): stop waiting
+                return
             pending = self.ack_map[uid]
             self.ack_map[uid] = []
             ack = None
@@ -146,11 +153,16 @@ class FrontendManager:
             if ack and ack.finished:
                 break
 
-        del self.ack_map[uid]
-        del self.event_map[uid]
+        self.ack_map.pop(uid, None)
+        self.event_map.pop(uid, None)
 
     async def stream_generate(self, uid: int):
         async for ack in self.wait_for_ack(uid):
+            if ack.error:  # explicit failure (PD): an error line, never a plain EOS
+                if ack.incremental_output:
+                    yield f"data: {ack.incremental_output}\n".encode()
+                yield f"data: [ERROR] {ack.error}\n".encode()
+                break
             yield f"data: {ack.incremental_output}\n".encode()
             if ack.finished:
                 break
@@ -159,7 +171,9 @@ class FrontendManager:
 
     async def stream_chat_completions(self, uid: int):
         first_chunk = True
+        error = None
         async for ack in self.wait_for_ack(uid):
+            error = error or ack.error
             delta = {}
             if first_chunk:
                 delta["role"] = "assistant"
@@ -177,17 +191,23 @@ class FrontendManager:
             if ack.finished:
                 break
 
-        # send final finish_reason
+        # send final finish_reason ("error" plus an error object when the request failed)
         end_chunk = {
             "id": f"cmpl-{uid}",
             "object": "text_completion.chunk",
-            "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}],
+            "choices": [{"delta": {}, "index": 0,
+                         "finish_reason": "error" if error else "stop"}],
         }
+        if error:
+            end_chunk["error"] = {"message": error, "type": "pd_error", "code": 500}
         yield f"data: {json.dumps(end_chunk)}\n\n".encode()
         yield b"data: [DONE]\n\n"
         logger.debug("Finished streaming response for user %s", uid)
 
     async def stream_with_cancellation(self, generator, request: Request, uid: int):
+        # PD (compatibility): also watch for a disconnect while nothing is streamed (e.g. while D
+        # waits for the KV), so that a client cancel reaches the scheduler as an abort at once
+        watcher = asyncio.create_task(self._watch_disconnect(request, uid))
         try:
             async for chunk in generator:
                 # detect if the client has disconnected
@@ -198,13 +218,25 @@ class FrontendManager:
         except asyncio.CancelledError:
             asyncio.create_task(self.abort_user(uid))
             raise
+        finally:
+            watcher.cancel()
+
+    async def _watch_disconnect(self, request: Request, uid: int, period: float = 0.25):
+        while uid in self.event_map:
+            await asyncio.sleep(period)
+            if uid in self.event_map and await request.is_disconnected():
+                logger.info("Client disconnected while waiting, user %s", uid)
+                await self.abort_user(uid)
+                return
 
     async def abort_user(self, uid: int):
         await asyncio.sleep(0.1)
-        if uid in self.ack_map:
-            del self.ack_map[uid]
-        if uid in self.event_map:
-            del self.event_map[uid]
+        if uid not in self.event_map and uid not in self.ack_map:
+            return  # already finished or aborted
+        self.ack_map.pop(uid, None)
+        event = self.event_map.pop(uid, None)
+        if event is not None:
+            event.set()  # wake a waiting stream so that it ends
         logger.warning("Aborting request for user %s", uid)
         await self.send_one(AbortMsg(uid=uid))
 
@@ -237,6 +269,16 @@ async def generate(req: GenerateRequest, request: Request):
             sampling_params=SamplingParams(
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
+            ),
+            disagg=(
+                None
+                if req.bootstrap_room is None
+                else {
+                    "bootstrap_host": req.bootstrap_host,
+                    "bootstrap_port": req.bootstrap_port,
+                    "bootstrap_room": req.bootstrap_room,
+                    "rid": req.rid,
+                }
             ),
         )
     )
@@ -285,10 +327,17 @@ async def v1_completions(req: OpenAICompletionRequest, request: Request):
 
     # Non-streaming: collect all chunks and return a single JSON response
     full_content = ""
+    error = None
     async for ack in state.wait_for_ack(uid):
         full_content += ack.incremental_output
+        error = error or ack.error
         if ack.finished:
             break
+    if error:  # PD failure: an OpenAI-style error object with HTTP 500
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": error, "type": "pd_error", "code": 500}},
+        )
 
     return {
         "id": f"chatcmpl-{uid}",

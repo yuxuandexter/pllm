@@ -18,4 +18,7 @@ class TableManager:
         return self._free_slots.pop()
 
     def free(self, slot: int) -> None:
+        # upstream fix (defence in depth): a slot freed twice would be handed to two requests
+        if slot in self._free_slots:
+            raise RuntimeError(f"TableManager.free: table slot {slot} is already free")
         self._free_slots.append(slot)

@@ -74,8 +74,10 @@ class Engine:
 
         # ======================= Attention & MoE backend initialization ========================
         self.ctx.attn_backend = self.attn_backend = create_attention_backend(
-            config.attention_backend, config.model_config
+            config.attention_backend, config.model_config,
+            workspace_mb=config.attention_workspace_mb,
         )
+        _warn_small_workspace(config)
         if config.model_config.is_moe:
             self.ctx.moe_backend = self.moe_backend = create_moe_backend(config.moe_backend)
 
@@ -108,6 +110,29 @@ class Engine:
             vocab_size=config.model_config.vocab_size,
             dummy_req=self.dummy_req,
         )
+
+        # Graph capture warms decode only.  A cold FlashInfer prefill JIT can block
+        # this thread longer than the PD heartbeat timeout.  Finish it before
+        # Scheduler creates the PD listener / publishes readiness, on the reserved
+        # dummy row and page (no request or ledger exists yet).
+        if getattr(config, "disaggregation_mode", "null") == "prefill":
+            self._warmup_prefill()
+
+    @torch.inference_mode()
+    def _warmup_prefill(self) -> None:
+        logger.info_rank0("PD prefill startup warmup begin (reserved dummy page)")
+        batch = Batch(reqs=[self.dummy_req], phase="prefill")
+        batch.padded_reqs = batch.reqs
+        batch.input_ids = self.dummy_req.input_ids.to(self.device)
+        batch.positions = torch.zeros(1, dtype=torch.int32, device=self.device)
+        batch.out_loc = self.page_table[self.dummy_req.table_idx, :1]
+        self.attn_backend.prepare_metadata(batch)
+        with self.ctx.forward_batch(batch):
+            self.model.forward()
+        # Neither mark the dummy request complete nor sample it.  Propagate any
+        # failure, and do not let readiness race outstanding warmup GPU work.
+        torch.cuda.synchronize(self.device)
+        logger.info_rank0("PD prefill startup warmup complete")
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
         if config.tp_info.size == 1 or config.use_pynccl:
@@ -231,3 +256,24 @@ def _adjust_config(config: EngineConfig):
     if config.model_config.is_moe and config.moe_backend == "auto":
         override("moe_backend", "fused")
         logger.info_rank0(f"Auto-selected MoE backend: {config.moe_backend}")
+
+
+def _warn_small_workspace(config: EngineConfig) -> None:
+    """Warn when the flashinfer float workspace is below the empirical need of one full
+    prefill batch (``--attention-workspace-mb``; a mixed-batch workspace overflow)."""
+    if "fi" not in config.attention_backend.split(","):
+        return
+    from minisgl.attention.fi import estimate_prefill_workspace_bytes
+
+    tp = config.tp_info.size
+    heads = max(1, config.model_config.num_qo_heads // tp)
+    need = estimate_prefill_workspace_bytes(heads, config.model_config.head_dim,
+                                            config.max_forward_len)
+    have = config.attention_workspace_mb * 1024 * 1024
+    if have < need:
+        logger.warning_rank0(
+            f"--attention-workspace-mb {config.attention_workspace_mb} is below the empirical "
+            f"flashinfer prefill scratch for a {config.max_forward_len}-token batch "
+            f"(~{need / 2**20:.0f} MiB): prefill may fail with 'Buffer overflow when allocating "
+            f"memory for batch_prefill_tmp_v'; consider >= {2 * need / 2**20:.0f}"
+        )

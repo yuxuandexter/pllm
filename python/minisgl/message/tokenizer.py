@@ -29,6 +29,7 @@ class DetokenizeMsg(BaseTokenizerMsg):
     uid: int
     next_token: int
     finished: bool
+    error: str | None = None  # PD (compatibility): the request failed; shown to the client
 
 
 @dataclass
@@ -36,6 +37,7 @@ class TokenizeMsg(BaseTokenizerMsg):
     uid: int
     text: str | List[Dict[str, str]]
     sampling_params: SamplingParams
+    disagg: Dict | None = None  # PD: {bootstrap_host, bootstrap_port, bootstrap_room}
 
 
 @dataclass

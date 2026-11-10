@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAl
 import torch
 from minisgl.core import Batch, Req
 from minisgl.env import ENV
+from minisgl.disagg.timing import prepare_batch, finish_batch
 from minisgl.message import (
     AbortBackendMsg,
     BaseBackendMsg,
@@ -56,9 +57,15 @@ class Scheduler(SchedulerIOMixin):
 
         # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
-        self.cache_manager = CacheManager(
-            self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
-        )
+        self.pd = None  # PD disaggregation hooks (python/minisgl/disagg/scheduler_pd.py)
+        if config.disaggregation_mode == "null":
+            self.cache_manager = CacheManager(
+                self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
+            )
+        else:  # every page decision goes through the PD ledger
+            from minisgl.disagg.scheduler_pd import make_pd
+
+            self.cache_manager, self.pd = make_pd(config, self.engine, self.table_manager)
         self.decode_manager = DecodeManager(config.page_size)
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
@@ -66,6 +73,9 @@ class Scheduler(SchedulerIOMixin):
 
         # some alias for easy access
         self.finished_reqs: Set[Req] = set()
+        # upstream fix (abort while the request's last step is in flight, overlap): requests freed
+        # by an abort; the in-flight step's result for them is dropped (no second free, no reply)
+        self.aborted_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
@@ -74,6 +84,15 @@ class Scheduler(SchedulerIOMixin):
 
         # Initialize the I/O mixin
         super().__init__(config, self.engine.tp_cpu_group)
+        if self.pd is not None:
+            self.pd.attach(self)
+
+    def _pd_tick(self, blocking: bool) -> bool:
+        """PD mode never blocks on the tokenizer socket: the PD inbox must be served too."""
+        if self.pd is None:
+            return blocking
+        self.pd.tick(idle=blocking)
+        return False
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""
@@ -92,6 +111,7 @@ class Scheduler(SchedulerIOMixin):
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
+        blocking = self._pd_tick(blocking)
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
@@ -107,6 +127,7 @@ class Scheduler(SchedulerIOMixin):
 
     def normal_loop(self) -> None:
         blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
+        blocking = self._pd_tick(blocking)
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
@@ -134,18 +155,27 @@ class Scheduler(SchedulerIOMixin):
         torch.cuda.synchronize(self.device)
         self.sync_all_ranks()
         self.engine.shutdown()
+        if self.pd is not None:
+            self.pd.shutdown()
 
+    @finish_batch
     def _process_last_data(self, last_data: ForwardData | None) -> None:
         if last_data is None:
             return
 
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
         copy_done.synchronize()
+        if self.pd is not None:  # the step's KV writes are done: tell the ledger
+            self.pd.complete(batch, copy_done)
         reply: List[DetokenizeMsg] = []
         new_finished_reqs: Set[Req] = set()
         with self.cache_manager.lazy_free_region():
             for i, req in enumerate(batch.reqs):
                 if isinstance(req, ChunkedReq):
+                    continue
+                # upstream fix: aborted while this step was in flight; its resources were freed
+                # once, at the abort, and the client gets nothing after the abort
+                if req in self.aborted_reqs:
                     continue
                 next_token = next_tokens_cpu[i]
                 req.append_host(next_token.unsqueeze(0))
@@ -158,12 +188,17 @@ class Scheduler(SchedulerIOMixin):
                 # NOTE: overlap scheduling may make the request freed twice, skip second free
                 if finished and req not in self.finished_reqs:
                     self.decode_manager.remove_req(req)
+                    if self.pd is not None and batch.is_prefill:  # P: push KV before freeing
+                        self.pd.on_finished(req, next_token)
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)
                 elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
                     self.cache_manager.cache_req(req, finished=False)
 
         self.finished_reqs = new_finished_reqs
+        # upstream fix: an abort removes the request from the managers before the next batch is
+        # scheduled, so the step just processed was the last one that could still hold it
+        self.aborted_reqs.clear()
         self.send_result(reply)
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
@@ -177,6 +212,8 @@ class Scheduler(SchedulerIOMixin):
             input_len, max_seq_len = len(msg.input_ids), self.engine.max_seq_len
             max_output_len = max_seq_len - input_len
             if max_output_len <= 0:
+                if self.pd is not None:  # PD: P refuses the D leg's destination; error reply
+                    self.pd.on_dropped(msg, f"input length {input_len} >= {max_seq_len}")
                 return logger.warning_rank0(
                     f"Input sequence length {input_len} exceeds {max_seq_len}, "
                     f"request {msg.uid} is dropped."
@@ -186,13 +223,20 @@ class Scheduler(SchedulerIOMixin):
                 logger.warning_rank0(
                     f"Adjust max_tokens to {max_output_len} for request {msg.uid}."
                 )
+            if self.pd is not None and self.pd.on_user_msg(msg):
+                return  # parked until the PD handshake / transfer is done
             self.prefill_manager.add_one_req(msg)
         elif isinstance(msg, AbortBackendMsg):
             logger.debug_rank0("Aborting request %d", msg.uid)
+            if self.pd is not None and self.pd.on_abort(msg.uid):
+                return
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
+                if self.pd is not None:  # PD trace: this release is an abort
+                    req_to_free.pd_why = "abort"
                 self._free_req_resources(req_to_free)
+                self.aborted_reqs.add(req_to_free)  # upstream fix: see _process_last_data
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
@@ -201,14 +245,22 @@ class Scheduler(SchedulerIOMixin):
         self.table_manager.free(req.table_idx)
         self.cache_manager.cache_req(req, finished=True)
 
+    @prepare_batch
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
         self.cache_manager.allocate_paged(batch.reqs)
+        if self.pd is not None:  # in-flight step k: the ledger checks every read and write
+            self.pd.launch(batch)  # and computes the step's kernel arguments (batch.pd_kargs)
         batch.positions = _make_positions(batch, self.device)
         input_mapping = _make_input_tuple(batch, self.device)
         write_mapping = _make_write_tuple(batch, self.device)
-        batch.out_loc = self.engine.page_table[input_mapping]
+        if self.pd is None:
+            batch.out_loc = self.engine.page_table[input_mapping]
+        else:  # PD: the KV-store slots come from the ledger core, not from the page table
+            batch.out_loc = self.pd.out_loc(batch, input_mapping)
         self.engine.attn_backend.prepare_metadata(batch)
+        if self.pd is not None:
+            self.pd.kargs_seen(batch)  # argument capture: observe final metadata + store slots
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),

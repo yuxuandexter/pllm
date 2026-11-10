@@ -194,6 +194,23 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         " the first one is used for prefill and the second one for decode.",
     )
 
+    def _positive_int(v: str) -> int:
+        n = int(v)
+        if n <= 0:
+            raise argparse.ArgumentTypeError("must be a positive number of MiB")
+        return n
+
+    parser.add_argument(
+        "--attention-workspace-mb",
+        type=_positive_int,
+        default=ServerArgs.attention_workspace_mb,
+        help="Float workspace of the flashinfer / TRT-LLM attention backend in MiB (default "
+        "128, mini-sglang's original size). flashinfer sizes its prefill split-KV scratch "
+        "(batch_prefill_tmp_v) inside plan() from the device grid, so it cannot be computed "
+        "here; observed on GB200: Qwen3-32B with an 8192-token prefill batch needed 140 MiB "
+        "for tmp_v alone. Use >= 256 on prefill-only (PD) instances with large models.",
+    )
+
     parser.add_argument(
         "--model-source",
         type=str,
@@ -215,6 +232,123 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         default=ServerArgs.moe_backend,
         choices=["auto"] + SUPPORTED_MOE_BACKENDS.supported_names(),
         help="The MoE backend to use.",
+    )
+
+    parser.add_argument(
+        "--disaggregation-mode",
+        type=str,
+        default=ServerArgs.disaggregation_mode,
+        choices=["null", "prefill", "decode"],
+        help="PD disaggregation role of this instance (null = colocated).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-bootstrap-port",
+        type=int,
+        default=ServerArgs.disaggregation_bootstrap_port,
+        help="Prefill only: TCP port where decode instances connect (bootstrap + control).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-transfer-backend",
+        type=str,
+        default=ServerArgs.disaggregation_transfer_backend,
+        choices=["mooncake"],
+        help="KV transfer engine (push: P writes into D).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-ib-device",
+        type=str,
+        default=ServerArgs.disaggregation_ib_device,
+        help="RDMA device(s) for Mooncake, e.g. mlx5_0. Required: never chosen automatically.",
+    )
+
+    parser.add_argument(
+        "--disaggregation-hostname",
+        type=str,
+        default=ServerArgs.disaggregation_hostname,
+        help="Host name or IP other instances use to reach this one's transfer engine.",
+    )
+
+    parser.add_argument(
+        "--disable-disaggregation-gpu-flush",
+        action="store_false",
+        dest="disaggregation_gpu_flush",
+        help="Decode only: skip cudaDeviceFlushGPUDirectRDMAWrites before the landing is recorded "
+        "(on by default, the contract; only for experiments).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-bootstrap-timeout",
+        type=float,
+        default=ServerArgs.disaggregation_bootstrap_timeout,
+    )
+
+    parser.add_argument(
+        "--disaggregation-waiting-timeout",
+        type=float,
+        default=ServerArgs.disaggregation_waiting_timeout,
+        help="Decode only: seconds to wait for the KV; on expiry the pages are quarantined.",
+    )
+
+    parser.add_argument(
+        "--disaggregation-ledger-check-every",
+        type=int,
+        default=ServerArgs.disaggregation_ledger_check_every,
+        help="Full ledger invariant scan every N ledger calls (0 = only when idle).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-kv-checksum",
+        action="store_true",
+        help="Per-write KV checksum: P sums every posted KV slab before p_post and sends it in "
+        "kv_done; D recomputes after the flush, before accepting the landing (set on P and D).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-kv-checksum-fatal",
+        action="store_true",
+        help="Decode only: stop the process on a checksum mismatch (default: quarantine the "
+        "pages and fail the request with an error).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-stats-port",
+        type=int,
+        default=ServerArgs.disaggregation_stats_port,
+        help="Serve GET http://127.0.0.1:<port>/pd_stats from the scheduler (0 = off).",
+    )
+
+    def _positive_seconds(v: str) -> float:
+        x = float(v)
+        if not x > 0:
+            raise argparse.ArgumentTypeError(f"must be > 0 seconds, got {v}")
+        return x
+
+    parser.add_argument(
+        "--disaggregation-ack-timeout",
+        type=_positive_seconds,
+        default=ServerArgs.disaggregation_ack_timeout,
+        help="Decode only: seconds to wait for P's acknowledgement of an abort; without it the "
+        "exposed pages are quarantined (a timeout is never stopped evidence).",
+    )
+
+    parser.add_argument(
+        "--disaggregation-row-check",
+        choices=["auto", "on", "off"],
+        default=ServerArgs.disaggregation_row_check,
+        help="Page-table row check (red team page-table row check).  The kernels take the KV slots computed by "
+        "the ledger core (k_launch), so 'auto' runs the check only for attention backends that "
+        "still read the page table (trtllm, fa); 'on' = debug cross-check (row check plus core "
+        "arrays == page-table gather every step, one host sync); 'off' = benchmarking only.",
+    )
+    parser.add_argument(
+        "--disable-disaggregation-row-check",
+        action="store_const",
+        const="off",
+        dest="disaggregation_row_check",
+        help="Same as --disaggregation-row-check off (06b6baf spelling).",
     )
 
     parser.add_argument(

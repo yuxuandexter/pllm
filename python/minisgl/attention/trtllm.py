@@ -33,7 +33,7 @@ class TRTLLMMetadata(BaseAttnMetadata):
 
 
 class TensorRTLLMBackend(BaseAttnBackend):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, workspace_mb: int = 128):
         ctx = get_global_ctx()
         self.config = config
         self.kvcache = ctx.kv_cache
@@ -42,8 +42,9 @@ class TensorRTLLMBackend(BaseAttnBackend):
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
         self.scale = config.head_dim**-0.5
+        self.workspace_bytes = int(workspace_mb) * 1024 * 1024  # --attention-workspace-mb
         self.workspace_buffer = torch.empty(
-            128 * 1024 * 1024, dtype=torch.uint8, device=self.kvcache.device
+            self.workspace_bytes, dtype=torch.uint8, device=self.kvcache.device
         )
 
     def forward(

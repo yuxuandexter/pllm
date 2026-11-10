@@ -76,6 +76,7 @@ def tokenize_worker(
                             uid=msg.uid,
                             incremental_output=reply,
                             finished=msg.finished,
+                            error=msg.error,
                         )
                         for msg, reply in zip(detokenize_msg, replies, strict=True)
                     ]
@@ -92,6 +93,7 @@ def tokenize_worker(
                             uid=msg.uid,
                             input_ids=t,
                             sampling_params=msg.sampling_params,
+                            disagg=msg.disagg,
                         )
                         for msg, t in zip(tokenize_msg, tensors, strict=True)
                     ]
