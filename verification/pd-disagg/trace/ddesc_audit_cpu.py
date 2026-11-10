@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""descriptor-capture capture sanity only, not trace conformance closure or proof. No ledger/plan_copy import."""
+"""Check descriptor capture without importing the ledger or its copy planner.
+
+This checks capture consistency, not model conformance or full closure."""
 import argparse
 from collections import Counter
 from copy import deepcopy

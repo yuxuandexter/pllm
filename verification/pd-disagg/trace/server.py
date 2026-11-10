@@ -1,6 +1,7 @@
-"""CPU HTTP harness: real Scheduler/PD/radix/ledger, CPU model + memmove transport.
-Used ONLY with MINISGL_PD_E2E_FAKE=1. No synthetic success PDT records.
-"""
+"""Use the real scheduler, PD managers, radix cache, and ledger on CPU.
+
+MINISGL_PD_E2E_FAKE=1 selects the CPU model and memmove transport. All success
+records come from the exercised control paths."""
 import argparse
 import contextlib
 import json

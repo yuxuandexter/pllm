@@ -1,19 +1,10 @@
-"""P side of PD disaggregation: bootstrap server, request matching, transfer worker.
+"""Prefill holds source pages until the transfer's outcome is known.
 
-Shape follows SGLang's prefill side (SGLang control plane; request lifecycle): a request waits in a bootstrap
-queue until D's destination info for its room arrived (non-optimistic), then it is prefilled,
-then its KV is pushed to D by a worker thread.  Every page decision is the ledger's:
-
-    p_post   hold the source pages for the transfer (before the scheduler releases them)
-    p_cancel never-submitted work on local abort / queue deadline (the contract, LedgerProtocol)
-    p_begin  POSTED -> SUBMITTED right before the engine call (False = cancelled meanwhile)
-    p_plan   all addresses
-    p_done   local completion: SEND_DONE / SEND_ACK / SEND_FAIL_UNSTOPPED decides the notice
-    p_abort  D's abort: ACK now, ACK after the running call, or never (failed transfer)
-
-The notice to D (kv_done) is sent only after the engine returned success for every block
-(the contract; visibility litmus / the contract: notices sent right after posting gave stale reads, after completion 0).
-"""
+A request waits for decode's destination descriptor before prefill starts.
+Registration holds the source before the scheduler releases the request.
+Queued registrations may be cancelled; submitted writes retain their holds
+until the engine returns. kv_done is sent only after every block completes
+locally, because a notice sent at submission can race with the data."""
 
 from __future__ import annotations
 
@@ -40,7 +31,7 @@ class _PReq:
     tok_hash: str
     t0: float
     match: Tuple | None = None  # (cid, peer, d_gen, xid, ntokens, tok_hash, pages)
-    state: str = "boot"  # boot -> ready (handed to scheduler) -> sent; or failed
+    state: str = "boot"
     rid: str = ""  # client request id (router), for the identity log lines
 
 
@@ -54,31 +45,28 @@ class _Peer:
 class PrefillPD:
     def __init__(self, ledger: L.Ledger, backend, layout: List[int], inst: int,
                  host: str = "0.0.0.0", port: int = 0, bootstrap_timeout: float = 300.0) -> None:
-        self.ledger = T.wrap(ledger, inst, "P")  # trace lines (compatibility), calls unchanged
+        self.ledger = T.wrap(ledger, inst, "P")
         self.backend = backend
         self.layout = list(layout)
         self.inst = inst
-        # Also bounds never-submitted work after p_post (LedgerProtocol, the contract). It never
-        # times out an engine call or supplies stopped evidence for submitted work.
+        # The queue deadline can cancel unsubmitted work but cannot prove a running write stopped.
         self.bootstrap_timeout = bootstrap_timeout
         self.hub = Hub()
         self.port = self.hub.listen(host, port)
         self.peer_of_cid: Dict[int, int] = {}
         self.peers: Dict[int, _Peer] = {}
-        self.reqs: Dict[int, _PReq] = {}  # uid -> request (until its transfer is posted)
+        self.reqs: Dict[int, _PReq] = {}
         # Keep the cancellation identity after on_prefill_done removes the request. Only
         # the scheduler thread owns this map; the worker consults the ledger under its lock.
-        self.pending: Dict[int, Tuple] = {}  # uid -> (eid, cid, peer, room, d_gen, xid, posted_at)
+        self.pending: Dict[int, Tuple] = {}
         self.uid_of_room: Dict[int, int] = {}
-        # room -> [(arrival time, xfer_req)] for destinations that came before the request
+        # Keep destinations that arrive before their prefill request so matching can occur later.
         self.unmatched: Dict[int, List[Tuple[float, Tuple]]] = {}
         # rooms whose P request failed or was aborted before D's destination came: a later
         # xfer_req for them is refused at once (stopped evidence) instead of at the timeout
         self.dropped_rooms: Dict[int, float] = {}
-        # intake_refusal: requests refused at intake (their room was busy here) whose D leg may still
-        # publish a destination: room -> [(time, ntokens, tok_hash)].  Such a destination is
-        # answered with the stopped refusal (SPEC 2.5 PBind: nopost + error) whenever it comes,
-        # instead of waiting in ``unmatched`` until D's timeout quarantines its pages
+        # Remember intake refusals so a later destination gets stop evidence immediately.
+        # Otherwise decode would wait for a nonexistent request and quarantine its pages.
         self.refused: Dict[int, List[Tuple[float, int, str]]] = {}
         self.ready: List[int] = []
         self.failed: List[Tuple[int, str]] = []
@@ -90,7 +78,6 @@ class PrefillPD:
         self._worker.start()
         self.ledger.event("role")
 
-    # ------------------------------------------------------------------ scheduler API
     def add_request(self, uid: int, room: int, ntokens: int, tok_hash: str,
                     now: float | None = None, rid: str = "") -> bool:
         """A request arrived at P (router gave it ``room``).  False: room already active; its D
@@ -117,8 +104,8 @@ class PrefillPD:
             if self.ledger.p_entry(pending[0])[0] != L.E_POSTED:
                 del self.pending[uid]
             elif now - pending[-1] > self.bootstrap_timeout:
-                # PdCore[84280a88] DrainTimeout:886-893: reg cannot quarantine. Use
-                # PCancelReg:1079 instead, even after normal release left the source Drain.
+                # Unsubmitted registrations cannot quarantine; PCancelReg releases their holds,
+                # including sources already left draining by normal request release.
                 self._cancel_pending(uid, "drain_timeout")
         for r in list(self.reqs.values()):
             if r.state == "boot" and now - r.t0 > self.bootstrap_timeout:
@@ -133,8 +120,7 @@ class PrefillPD:
             else:
                 del self.refused[room]
         for room, ms in list(self.unmatched.items()):
-            # a destination whose P request never came (router -> P failed): refuse it, so
-            # that D gets stopped evidence before its own waiting timeout quarantines the pages
+            # Refuse unmatched destinations before decode times out and quarantines them.
             keep = []
             for t, m in ms:
                 if now - t <= self.bootstrap_timeout:
@@ -177,7 +163,7 @@ class PrefillPD:
         self.uid_of_room.pop(r.room, None)
         cid, peer, d_gen, xid, d_ntok, d_hash, pages = r.match[:7]
         descriptor = r.match[7] if len(r.match) > 7 else None
-        # PdCore[05e988a5] PPost:556 + SFollow:1384 atomically snapshot sources/hold Shared.
+        # PdCore PPost + SFollow atomically snapshot sources/hold Shared.
         kw = {"dst_descriptor": descriptor} if descriptor is not None else {}
         eid = self.ledger.p_post(gen, ntokens, peer, r.room, d_gen, xid, pages, **kw)
         if eid < 0:  # nothing registered: no byte will ever move (stopped failure)
@@ -203,7 +189,7 @@ class PrefillPD:
 
     def abort(self, uid: int) -> None:
         """Client abort: cancel registered work before the scheduler releases its pages.
-        PdCore[84280a88] PEnd:541-552; a submitted transfer retains its engine hold."""
+        PdCore PEnd; a submitted transfer retains its engine hold."""
         self._cancel_pending(uid, "client_abort")
         r = self.reqs.get(uid)
         if r is not None:
@@ -219,7 +205,6 @@ class PrefillPD:
         self._work.put(None)
         self.hub.shutdown()
 
-    # ------------------------------------------------------------------ internals
     def _send(self, cid: int, msg: Dict) -> bool:
         return self.hub.send(cid, msg)
 
@@ -372,8 +357,8 @@ class PrefillPD:
                 room=msg["room"], d_h=msg["gen"], xid=msg["xid"],
                 ntokens=msg["ntokens"], h=-1)
             desc = msg.get("descriptor")
-            # JSON turns tuples into lists; freeze the D-created fields without rebuilding
-            # them from P's arguments (which would erase the contract(ii)'s independent evidence).
+            # Freeze JSON lists without rebuilding the D-created descriptor from P's arguments;
+            # that would erase the independent evidence of destination identity and order.
             descriptor = None if desc is None else (*desc[:5], tuple(desc[5]), tuple(desc[6]))
             m = (cid, peer, msg["gen"], msg["xid"], msg["ntokens"], msg["tok_hash"],
                  list(msg["pages"]), descriptor)
@@ -381,8 +366,7 @@ class PrefillPD:
             r = None if uid is None else self.reqs[uid]
             if (r is None or (m[4], m[5]) != (r.ntokens, r.tok_hash)) \
                     and self._take_refused(msg["room"], m[4], m[5]):
-                # intake_refusal: the D leg of a request this P refused at intake (busy room); no request
-                # here will ever use it -> stopped refusal now, not D's timeout (SPEC 2.5 PBind)
+                # Refuse the destination of an intake-rejected request before decode times out.
                 self._refuse_dest(m, msg["room"], "refused_intake", L.REJ_DUP)
             elif uid is None and msg["room"] in self.dropped_rooms:
                 self._ddesc_recv(m, msg["room"], "dropped_room")

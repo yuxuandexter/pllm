@@ -1,27 +1,28 @@
 # Design model
 
-`PdCore.tla` is a protocol design, not an extraction of Python code.
-`MC_pd_ind.tla` defines the strengthened `IndInv`; `IndInv => Safety` is syntactic.
-The public model is a mechanically checked renaming of the proof-target copy, with
-no other changes; source hashes and proof status are in [proof status](../proofs/STATUS.md).
+`PdCore.tla` models the protocol design. It is not extracted from Python code.
+`MC_pd_ind.tla` defines `IndInv`, which includes `Safety` as a conjunct.
+The public model differs from the proof target only by a mechanically checked
+renaming. See [proof status](../proofs/STATUS.md) for source hashes and proof results.
 
-| State / action family | Meaning |
+| State and actions | Purpose |
 |---|---|
-| Page state, owner and generation | Free / private / shared / draining / quarantined; access belongs to the current lifetime. |
-| Request, router and messages | Open, route, receive, reply, cancel; room reuse cannot transfer old identity. |
-| Transfer and stream ledgers | Register, submit, complete, flush, drain; failed returns do not imply stopped hardware. |
-| Prefix state | Choose, hit, seal, deduplicate, release, evict; holder counts include requests, entries and quarantine. |
-| Kernel steps | Launch, land, complete; reads stay pinned until completion. |
+| Page state, owner, and generation | Associate every access with the page's current lifetime. |
+| Requests, routing, and messages | Prevent room reuse from accepting an old request's identity. |
+| Transfer and stream ledgers | Retain access holds until completion evidence arrives, including after a failed return. |
+| Prefix state | Count request, transfer, and quarantine holders before reuse or eviction. |
+| Kernel steps | Keep read pages pinned until the step completes. |
 
-`Safety` combines ownership/landing, generation filtering, truthful single replies,
-quarantine exclusion, conservation, read-pin safety and prefix immutability/identity.
-`IndInv` adds type and message domains; router and transfer consistency;
-ledger, stream and page relations; request, data and message relations;
-kernel pins and grown pages; reachability strengthening;
-prefix holders, data and transfer snapshots; `PrivateMapOwner` and
-`EntryQuarantineDisjoint` prohibit wrong owners and duplicate quarantine accounting.
+`Safety` checks ownership, transfer landing, generation filtering, truthful single
+replies, quarantine exclusion, conservation, read pins, and prefix identity and
+immutability. `IndInv` also constrains types, message domains, reachable states,
+and the relationships between requests, pages, streams, transfers, and kernel
+pins. Prefix checks relate holder counts to data and transfer snapshots.
+`PrivateMapOwner` rejects incorrect ownership; `EntryQuarantineDisjoint` prevents
+duplicate quarantine accounting.
 
-Run `TLA2TOOLS_JAR=/path/to/tla2tools.jar python3 spec/check.py --out model-output`.
-Default `small.cfg` checks IndInv with finite prefix sharing; push/pull configs
-check their listed safety invariants. Deadlock checking is disabled; this is not
-an induction, liveness or action-coverage verdict. All three finite configurations were rechecked after renaming.
+Run `TLA2TOOLS_JAR=/path/to/tla2tools.jar python3 verification/pd-disagg/spec/check.py --out model-output`.
+The default `small.cfg` checks `IndInv` with finite prefix sharing. The push and
+pull configurations check their listed safety invariants. All three were rechecked
+after renaming. Deadlock checking is disabled. These bounded runs do not establish
+induction, liveness, or action coverage.

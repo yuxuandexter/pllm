@@ -1,15 +1,9 @@
-"""intake_refusal (GPU batch 4, e2e-20261105T172700Z 0.6b d_faults d2): P refused a same-room resend at
-intake while D accepted it; D's destination then waited at P for a request that never came, and D
-quarantined 791 pages at its waiting timeout although P was healthy.
+"""A prefill refusal must resolve decode's destination without a timeout.
 
-SPEC 2.5 PBind: a P that refuses a binding answers ``nopost`` + error, so D ends the request at
-once with an error and frees its pages (never-posted evidence').  The fix: P remembers every request it refuses or
-drops before posting (busy room at intake, a scheduler drop before PD saw it) and answers that
-request's destination with the stopped refusal (tombstone + ``kv_fail stopped=1``) whenever it
-arrives, also when it was already waiting.  Batch-4 order reproduced: P gets the original and the
-resend (refused: room busy), D gets the original, the original lands at D (D's record of the room
-is gone), then D gets the resend and publishes.
-"""
+Decode may accept a resend after its original request has landed while prefill
+still considers the room busy. Remember the refusal so its destination receives
+stop evidence whenever it arrives, including when it arrived before the refusal.
+Otherwise healthy prefill leaves decode waiting and quarantining unused pages."""
 
 from __future__ import annotations
 
@@ -32,7 +26,7 @@ def test_intake_refusal_resend_refused_by_p_accepted_by_d(cluster):
     t0 = time.monotonic()
     resend = d.submit(room, prompt, p.port, 3)  # D accepts the resend and publishes
     assert resend not in d.failed
-    d.abort(orig)  # the client's abort reaches D's original only now (batch-4 order)
+    d.abort(orig)  # The original abort arrives only after decode accepts the resend.
     assert run_until(lambda: resend in d.failed, [p, d], timeout=5)
     assert time.monotonic() - t0 < 1.0, "D waited for its timeout"  # before the fix: 3 s
     assert "prefill refused the transfer" in d.failed[resend]
@@ -57,8 +51,7 @@ def test_intake_refusal_destination_that_came_first_is_refused_when_p_drops(clus
 
 
 def test_intake_refusal_refusal_does_not_hit_another_prompt_in_the_same_room(cluster):
-    """A refusal record is for one prompt: a later, different request that reuses the room
-    (d2.other in batch 4) with D first must still be served."""
+    """A refusal belongs to one prompt; another prompt may reuse the room safely."""
     (p,), (d,) = cluster(waiting_timeout=3.0)
     room = 4242
     p.submit(room, [9] * 4)

@@ -1,10 +1,9 @@
-"""lifecycle concrete slot witness for PdCore's abstract KEnt page groups.
+"""Check concrete slots against PdCore's abstract KEnt page groups.
 
-Reads only independent allocation/publish pages and configuration, then reconstructs
-ordered token slots. D growth has no alloc record: a new boundary page is learned
-from w0, checked for bounds/ownership, and retained for all later steps. Summary
-collisions and post-hook copies remain trusted boundaries (README section 18).
-"""
+Reconstruct ordered slots from independent allocation, publication, and config
+records. Decode growth has no allocation record: learn each new boundary page
+from w0, check its bounds and ownership, and retain it for later steps. Digest
+collisions and copies after the capture hook remain trusted boundaries."""
 from __future__ import annotations
 import os
 import re

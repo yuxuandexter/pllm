@@ -1,12 +1,9 @@
-"""Transfer backends: Mooncake (the one SGLang uses by default) and an in-process fake for tests.
+"""Transfer backends expose local completion to the ledger.
 
-Both expose the same three calls the glue uses, mirroring SGLang's
-``distributed/device_communicators/mooncake_transfer_engine.py@92a6910ef2``:
-``initialize(hostname, "P2PHANDSHAKE", protocol, device)``, ``batch_register_memory`` of the
-whole KV pool once at start, and ``batch_transfer_sync_write`` (push: P writes into D).
-``write`` returns 0 only when the engine reports local completion of every block; anything
-else means the writes may still land later (H-fail), which the ledger turns into quarantine.
-"""
+Mooncake registers the KV pool once and pushes source blocks into decode's pool.
+write returns zero only after the engine reports completion for every block.
+Any other result may leave writes in flight, so the ledger quarantines their
+pages. The in-process fake preserves this failure behavior for CPU tests."""
 
 from __future__ import annotations
 
@@ -108,12 +105,10 @@ class FaultInjector:
 
 
 class MooncakeBackend:
-    """``mooncake.engine.TransferEngine`` with the same calls SGLang makes (needs GPU + NIC).
+    """Require an explicit RDMA device to avoid selecting an incompatible port.
 
-    The RDMA device must be given explicitly (the contract: on GB200 nodes only the InfiniBand ports
-    mlx5_0, mlx5_1, mlx5_3, mlx5_4 work; the Ethernet port mlx5_2 breaks default init), so an
-    empty device is refused for protocol "rdma".
-    """
+    Mooncake uses the selected device for the registered GPU memory. Tests use
+    the in-process backend instead."""
 
     def __init__(self, hostname: str, ib_device: str, protocol: str | None = None) -> None:
         from mooncake.engine import TransferEngine  # imported lazily: not needed on CPU
@@ -152,9 +147,7 @@ class MooncakeBackend:
         return self.faults.run(call)
 
 
-# ---------------------------------------------------------------------------------------------
 # fake backend: bytes really move between in-process buffers, with fault injection
-# ---------------------------------------------------------------------------------------------
 
 _FAKE_SESSIONS: Dict[str, "FakeBackend"] = {}
 _FAKE_LOCK = threading.Lock()

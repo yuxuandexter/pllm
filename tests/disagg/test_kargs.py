@@ -1,28 +1,12 @@
-"""KernelReadPins (lifecycle contract, kernel argument contract = ledger contract): the kernels' arguments come
-from the ledger core.
+"""Kernel arguments must come from the ledger's checked ownership state.
 
-Every PD step is launched with ``ledger.k_launch`` (KLaunch), which refuses the step (state
-unchanged) or returns flashinfer's ``indptr`` / ``indices`` / ``last_page_len`` / ``qo_indptr``
-and the KV-store ``out_loc``; ``step_done`` (KDone) follows the step's copy-done event.  The
-fi attention backend and the scheduler use these arrays instead of gathering them from the page
-table.  Runs with the Python ledger.
+Compare every generated array with an independent page-table gather, including
+padding. Invalid generations, bindings, visibility, or token ranges must fail
+without consuming the step number or changing state. Overlapping steps retain
+their read pins until completion.
 
-1. ledger level: the arrays equal the page-table gather built from ``token_slots`` (padding rows:
-   the dummy slot), ``k_launch`` / ``step_done`` change the state exactly like ``launch`` /
-   ``complete``; the row binding (compatibility: ``bind_row`` one to one until release, ``k_launch(rows=)``
-   refuses any item whose gen is not the one bound to its row); peer transfer identity range (peer xid outside u64); the injections the core must refuse at launch (stale / failed / unknown
-   generation, before landed, landed but not visible, unwritten KV, a gen twice, a freed and
-   reused page's old owner, out-of-range rows, wrong step, bad npad) raise with the state
-   unchanged and the step number not consumed; NoFreeUnderRead under overlap (release while a
-   later step still reads: DRAINING, FREE only at that step's step_done).
-2. the fi backend: ``prepare_metadata`` from the core's arrays gives the same FIMetadata as the
-   06b6baf gather, and ``plan()`` receives the core's arrays (eager decode, both decode kernel
-   choices, prefill, CUDA-graph replay); flashinfer itself is a recording fake (no GPU here).
-3. the real Scheduler + stub engine: every step's core arrays equal the 06b6baf gather on
-   fault-free batches, CUDA-graph padding rows get the dummy slot, the debug cross-check runs
-   and catches a corrupted array, the same injections stop P / D at launch, and a request
-   released while the next step reads it stays DRAINING until that step's step_done.
-"""
+A recording FlashInfer backend checks plan inputs without a GPU. The real
+scheduler with a CPU engine checks the same boundaries at its actual call sites."""
 
 from __future__ import annotations
 
@@ -57,9 +41,10 @@ def i32(b):
 
 
 def gather(led, items, npad, n, ps):
-    """What 06b6baf's fi backend and _prepare_batch gave the kernels, from a page table whose
-    rows are the ledger's token_slots: indices = cat(row[:device_len]), indptr = cumsum,
-    out_loc = row[cached_len:device_len]; padding rows: the dummy slot n * ps."""
+    """Build an independent oracle from a page table populated by token_slots.
+
+    Read each used row prefix and write only its uncached suffix. Padding
+    uses the reserved dummy slot."""
     ip, qo, ind, ol = [0], [0], [], []
     for g, rd, wr in items:
         row = led.token_slots(g, 0, wr)
@@ -87,7 +72,6 @@ def local_prefill(led, step: int, ntok: int, ps: int):
     return g
 
 
-# ------------------------------------------------------------------------------- 1. ledger
 @pytest.mark.parametrize("ps", [1, 4])
 @pytest.mark.parametrize("npad", [0, 3])
 def test_k_launch_arrays_are_the_page_table_gather(ps, npad):
@@ -146,7 +130,7 @@ def _inject(kind: str):
         assert d.alloc(g, 2)
         d.release(g)
         bad = [(g, 0, 1)]
-    elif kind == "freed_page_old_owner":  # MSLOT shape: a slot of a page freed and reused
+    elif kind == "freed_page_old_owner":  # Use a slot whose page was freed and reassigned to another generation.
         g = d.open_req(2)
         old = d.alloc(g, 2)
         d.release(g)
@@ -227,7 +211,6 @@ def test_release_under_read_drains_until_the_reading_step_is_done():
     assert d.free_pages() == 16 and d.stats()["draining"] == 0
 
 
-# ------------------------------------------------------------------------------- row binding (compatibility)
 def test_bind_row_one_to_one_until_release():
     d = _d_pair()
     a, b = d.open_req(1), d.open_req(2)
@@ -311,8 +294,7 @@ def _p_pair():
 
 @pytest.mark.parametrize("xid", [-1, 1 << 64, (1 << 64) + 5])
 def test_peer_xid_range_peer_xid_outside_u64_is_refused_at_post(xid):
-    """peer transfer identity range (main): as the Rust core, a peer xid outside 0 .. 2^64 - 1 is refused at p_post with
-    REJ_DUP (also for an unknown peer), nothing registered."""
+    """Reject transfer IDs outside the unsigned 64-bit range before registration."""
     p, g = _p_pair()
     before = state(p)
     assert p.p_post(g, 2, D_INST, 1, 1, xid, [0, 1]) == L.REJ_DUP
@@ -322,9 +304,9 @@ def test_peer_xid_range_peer_xid_outside_u64_is_refused_at_post(xid):
 
 
 def test_peer_xid_range_abort_for_xid_outside_u64_is_acked_without_tombstone():
-    """peer transfer identity range (main): such an xid can never have been posted, so no write can be in flight: the
-    abort is acknowledged and leaves no tombstone, in particular none at the xid it would wrap
-    to (2^64 - 1 for -1, 0 for 2^64), which still post afterwards."""
+    """An out-of-range ID cannot name a posted write and must leave no tombstone.
+
+    Its wrapped value must still be usable by a later valid transfer."""
     p, g = _p_pair()
     for xid in (-1, 1 << 64):
         assert p.p_abort(D_INST, xid) == L.SEND_ACK
@@ -336,7 +318,6 @@ def test_peer_xid_range_abort_for_xid_outside_u64_is_acked_without_tombstone():
         assert not any(k[1] < 0 or k[1] >= 1 << 64 for k in p.used_peer_xids)
 
 
-# ------------------------------------------------------------------------------- staging
 @pytest.mark.parametrize("pinned", [True, False])
 def test_stage_kargs_views(pinned):
     led = L.RefLedger(32, lay(4, 32), D_INST, check_every=1)
@@ -360,7 +341,6 @@ def test_stage_kargs_views(pinned):
     led.step_done(3)
 
 
-# ------------------------------------------------------------------------------- 2. fi backend
 class _FakeDecode:
     def __init__(self, use_tensor_cores=False, graph=False):
         self.use_tensor_cores, self.graph, self.plans = use_tensor_cores, graph, []
@@ -381,7 +361,7 @@ class _FakePrefill:
 def fi_backend(monkeypatch):
     from minisgl.attention import fi as FI
 
-    for name in ("ones", "arange"):  # 06b6baf's path asks for pinned host tensors
+    for name in ("ones", "arange"):  # The page-table gather normally requests pinned host tensors.
         real = getattr(torch, name)
         monkeypatch.setattr(torch, name, lambda *a, _r=real, **k: _r(*a, **{
             x: y for x, y in k.items() if x != "pin_memory"}))
@@ -421,7 +401,7 @@ def test_fi_metadata_and_plan_from_the_core(fi_backend, monkeypatch, case, tenso
     be.decode_wrappers.use_tensor_cores = tensor_cores
     led = L.RefLedger(n, lay(ps, n), D_INST, check_every=1)
     pt = torch.zeros((6, 64), dtype=torch.int32)
-    pt[5].fill_(n * ps)  # Engine.__init__: dummy row -> dummy slot
+    pt[5].fill_(n * ps)  # Match the reserved slot used by Engine.__init__ for padding.
     rows = {}
     for row, ntok in ((0, 6), (1, 9), (2, 3)):
         rows[row] = local_prefill(led, len(rows) + 1, ntok, ps)
@@ -442,11 +422,11 @@ def test_fi_metadata_and_plan_from_the_core(fi_backend, monkeypatch, case, tenso
         spec, npad, phase = [(0, 6, 8), (1, 9, 10)], 0, "prefill"
     batch = _batch(phase, spec, npad, 5)
     monkeypatch.setattr(FI, "get_global_ctx", lambda: SimpleNamespace(page_table=pt))
-    be.prepare_metadata(batch)  # 06b6baf: gathered from the page table
+    be.prepare_metadata(batch)
     old = batch.attn_metadata
     items = [(rows[row], c, d) for row, c, d in spec]
     batch.pd_kargs = SPD.stage_kargs(step, led.k_launch(step, items, npad), be.device)
-    be.prepare_metadata(batch)  # KernelReadPins: from the core
+    be.prepare_metadata(batch)
     new = batch.attn_metadata
     for f in META:
         assert getattr(new, f).tolist() == getattr(old, f).tolist(), f
@@ -485,7 +465,6 @@ def test_fi_refuses_core_arrays_of_another_batch_shape(fi_backend):
         be.prepare_metadata(batch)
 
 
-# ------------------------------------------------------------------------------- 3. scheduler
 @pytest.mark.parametrize("ps,overlap", [(1, True), (4, True), (4, False)])
 def test_core_arrays_equal_the_page_table_gather_on_fault_free_batches(ps, overlap):
     ref = reference(PROMPTS, 6, ps)
@@ -514,8 +493,7 @@ def test_core_arrays_equal_the_page_table_gather_on_fault_free_batches(ps, overl
 
 
 def _watch_rows(s, seen, side):
-    """Every KLaunch of the glue passes rows = the batch's table rows, and each row is bound in
-    the core to exactly the gen the glue has for it (compatibility, 14.3 call sites 1-3)."""
+    """Every scheduler launch must pass the table rows bound to its generations."""
     led, cache = s.pd.ledger, s.cache_manager
     real = led.k_launch
 
@@ -541,7 +519,7 @@ def test_cuda_graph_padding_rows_get_the_dummy_slot(ps):
         e = d.engine
         assert e.pad_rows > 0 and d.pd.kargs_stats["kargs_pad_rows"] == e.pad_rows
         assert e.pad_slots == {e.num_pages * ps}  # only the dummy slot, never a ledger page
-        assert e.kargs_diff == 0  # = the dummy row of the page table (06b6baf)
+        assert e.kargs_diff == 0
         assert (e.kv[:, :, e.num_pages] == 250.0).any()  # the dummy page took the writes
     finally:
         close(p, d)
@@ -616,12 +594,11 @@ def _record_refusals(led, log):
                                      ("before_landed", 4), ("landed_not_visible", 1),
                                      ("landed_not_visible", 4)])
 def test_scheduler_injection_is_refused_at_launch(kind, ps):
-    """The same injections through the real Scheduler: D stops before the step reaches the
-    (stub) kernels.  At page 1 every decode step needs a new page, so the step's page alloc is
-    the first ledger call that refuses: stale_gen (the gen is gone), and, since compatibility (the contract,
-    D's ledger has role D), before_landed / landed_not_visible too (D's alloc window: the gen's
-    transfer is exposed but not VISIBLE; a role refusal).  At page 4 the step needs no new page
-    and KLaunch refuses it."""
+    """Reject invalid handoffs before the scheduler reaches a kernel.
+
+    At page size one, decode needs a new page each step, so alloc detects stale
+    or not-yet-visible transfers first. At page size four, k_launch detects
+    the same faults without an intervening allocation."""
     p, d, bp, _ = pd_pair(ps)
     refused = []
     _record_refusals(d.pd.ledger, refused)
@@ -662,12 +639,10 @@ def test_scheduler_injection_is_refused_at_launch(kind, ps):
 
 @pytest.mark.parametrize("row_check", ["auto", "on"])
 def test_swapped_live_generations_are_refused_at_launch(row_check):
-    """Was the known gap of compatibility (ledger contract): two live requests of the same length
-    whose row -> gen entries the glue swaps.  With the row binding in the core (compatibility, 14.3)
-    KLaunch refuses it: row a is bound to gen a, the item says gen b (``auto``: k_launch,
-    ledger state unchanged, the step never reaches the kernels).  ``on``: the debug row check
-    runs first and stops it the same step (the page-table rows were written with the right
-    gens at commit)."""
+    """Swapping two live generations must fail even when their row lengths match.
+
+    Auto mode detects the wrong binding in k_launch without changing state.
+    Debug mode detects the mismatch in the page-table check before launch."""
     two = {1: [5, 6, 7, 8], 2: [9, 10, 11, 12]}
     p, d, bp, _ = pd_pair(1, row_check=row_check)
     real, done, refused = d.pd.launch, [], []
@@ -706,9 +681,9 @@ def test_swapped_live_generations_are_refused_at_launch(row_check):
 
 @pytest.mark.parametrize("overlap", [True, False])
 def test_release_while_the_next_step_reads_stays_draining(overlap):
-    """step_done after each copy-done event; the overlap scheduler launches step k+1 (which still
-    holds a request) before step k's EOS ends it, so the release must leave its pages DRAINING
-    until step_done(k+1) (Private -> Drain under a pin, never Free)."""
+    """The next overlapping step may still read a request whose EOS just arrived.
+
+    Release must leave its pages draining until that step's copy-done event."""
     p, d, _, _ = pd_pair(1)
     d.engine.eos_at = {3: 1}  # uid 3 ends with EOS at its second decode output
     led, cm = d.pd.ledger, d.cache_manager

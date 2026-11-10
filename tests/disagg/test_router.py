@@ -99,7 +99,6 @@ def test_router_closes_d_when_p_fails():
         s.shutdown()
 
 
-# ------------------------------------------------------------------- request completion (b) / request_deadline (compatibility)
 def silent_server(send_headers=True, first_line=b""):
     """An instance that accepts the request, maybe sends headers and one line, then says
     nothing; ``closed`` is set when the router hangs up on it."""

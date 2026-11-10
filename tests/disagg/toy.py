@@ -60,8 +60,7 @@ class ToyPool:
                         return False
         return True
 
-    # KernelReadPins: the toy "kernels" address KV by slot (page * page_size + offset), as handed out by the
-    # ledger core's k_launch (indices / out_loc), not by the request's page list
+    # Address KV through k_launch arrays so wrong kernel slots affect the observed output.
     def write_slot(self, slot: int, pos: int, tok: int) -> None:
         page, off = slot // self.ps, slot % self.ps
         for kv in (0, 1):
@@ -107,9 +106,10 @@ def i32(b) -> List[int]:
 
 
 def kargs_rows(ledger, arrs, items) -> List[Tuple[List[int], List[int]]]:
-    """Per row: (read slots indices[indptr[j]:indptr[j+1]], written slots out_loc[qo[j]:qo[j+1]]),
-    after checking them against what 06b6baf gathered from a page table filled from
-    ``token_slots`` (the kernel argument contract translation; an AssertionError stops the toy run)."""
+    """Check read and write slots against an independent page-table gather.
+
+    Return per-row slot lists only after they match token_slots; otherwise
+    stop the toy run with AssertionError."""
     ip, qo, ind, ol, lpl = (i32(b) for b in arrs)
     assert lpl == [1] * (len(ip) - 1), lpl
     out = []
@@ -133,7 +133,6 @@ class ToyP:
         self.checksum = checksum
         self.pool = ToyPool(num_pages, ps)
         self.inst = M.new_instance_id()
-        # compatibility (the contract): a P process's ledger has role P, as make_pd builds it
         self.ledger = L.RefLedger(num_pages, self.pool.layout, self.inst, check_every, role=role)
         self.backend = FakeBackend(name)
         self.backend.add_region(self.pool.base, self.pool.buf)
@@ -203,7 +202,6 @@ class ToyD:
                  **timeouts) -> None:
         self.pool = ToyPool(num_pages, ps)
         self.inst = M.new_instance_id()
-        # compatibility (the contract): a D process's ledger has role D, as make_pd builds it
         self.ledger = L.RefLedger(num_pages, self.pool.layout, self.inst, check_every, role=role)
         self.backend = FakeBackend(name)
         self.backend.add_region(self.pool.base, self.pool.buf)
@@ -216,7 +214,7 @@ class ToyD:
                            checksum_fatal=checksum_fatal, **timeouts)
         self.ledger = self.pd.ledger  # the traced view
         self.uids = itertools.count(1)
-        self.meta: Dict[int, Tuple[List[int], int]] = {}  # uid -> (prompt, max_new)
+        self.meta: Dict[int, Tuple[List[int], int]] = {}
         self.running: Dict[int, dict] = {}
         self.outputs: Dict[int, List[int]] = {}
         self.failed: Dict[int, str] = {}
@@ -224,8 +222,7 @@ class ToyD:
         self.bad_reads = 0
 
     def _flush(self) -> None:
-        # record how many landings the ledger had seen when the flush ran: the contract wants the
-        # flush before the landing is recorded, so the k-th flush must see k - 1 landings
+        # Count recorded landings at each flush to detect a flush that happens too late.
         self.flush_seen.append(self.ledger.stats()["xfers_landed"])
         self.flushes += 1
 

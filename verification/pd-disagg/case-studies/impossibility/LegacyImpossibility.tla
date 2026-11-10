@@ -2,22 +2,20 @@
 EXTENDS Integers, TLAPS
 
 (*************************************************************************
- Relational, infinite-trace theorem. No finite state bound, clock deadline,
- or fixed policy. cut and time range over Nat. Obs* denotes the COMPLETE
- causal local history, including clocks/errors/leases and all descriptors.
- Each delayed trace is chosen by the adversary AFTER the failed trace's
- release witness is chosen. No inference from "hold at T" to "hold forever".
+ The theorem ranges over unbounded time and arbitrary causal local policies.
+ Obs* includes the full local history: clocks, errors, leases, and descriptors.
+ Choose the delayed execution after finding the failed execution's release
+ time, so the argument needs no uniform deadline.
 
- This is an abstraction theorem, NOT a refinement proof from the engines.
- Strict physical Isolation below already contradicts DelayedAccess+LocalPolicy+Finality; the
- requested NoGenerationValidation-necessity claim is false. Integrity is not weakened to obtain
- three successful ablations. See README and check.py.
+ DelayedAccess and LocalPolicy prevent Isolation and Finality from both holding.
+ NoGenerationValidation is unnecessary for that physical contradiction.
+ This abstraction does not establish refinement from either engine.
 *************************************************************************)
 CONSTANTS Pi(_), ObsFailed(_), ObsLate(_, _), ReleaseFailed(_),
           ReleaseLate(_, _), AccessLate(_, _), GenChecked(_, _),
           Consume(_, _), ReadValue(_, _), ExpectedValue(_, _)
 
-\* DelayedAccess is the environment's delayed-trace closure: for EVERY finite cut,
+\* DelayedAccess requires that after every finite cut,
 \* an indistinguishable trace can touch the very same physical page later.
 \* No sound stop observation has occurred in the common local prefix.
 DelayedAccess ==
@@ -25,8 +23,8 @@ DelayedAccess ==
     /\ \A t \in 0..cut : ObsLate(cut, t) = ObsFailed(t)
     /\ AccessLate(cut, cut + 1)
 
-\* LocalPolicy: arbitrary deterministic causal control. Internal/random choices can
-\* be included in the shared prefix; not a probabilistic guarantee theorem.
+\* Include internal and random choices in the shared history to compare causal
+\* decisions. The theorem makes no probabilistic guarantee.
 LocalPolicy ==
   /\ \A t \in Nat : ReleaseFailed(t) = Pi(ObsFailed(t))
   /\ \A cut, t \in Nat : ReleaseLate(cut, t) = Pi(ObsLate(cut, t))
@@ -35,9 +33,8 @@ NoGenerationValidation ==
                    \A cut, t \in Nat : ~GenChecked(cut, t)
 LegacyArch_Axioms == DelayedAccess /\ LocalPolicy /\ NoGenerationValidation
 
-\* A release relinquishes the OLD transfer's ownership permanently; a later
-\* allocation or software generation bump cannot undo the historical release.
-\* Bad access at a finite t has a finite counterexample prefix: safety.
+\* Later allocation or a generation change cannot undo an old transfer's release.
+\* Any access after that release supplies a finite safety counterexample.
 Isolation ==
   \A cut, t \in Nat : AccessLate(cut, t) =>
     \A releasedAt \in 0..t : ~ReleaseLate(cut, releasedAt)
@@ -45,9 +42,8 @@ Integrity ==
   \A cut, t \in Nat : Consume(cut, t) =>
     ReadValue(cut, t) = ExpectedValue(cut, t)
 
-\* Eventual release on the permanently failed trace: exists a finite t.
-\* It is neither a fixed uniform timeout nor mere request error completion.
-\* This is <>Released in an extensional Nat-indexed trace representation.
+\* Finality requires physical release at some finite time on the failed trace.
+\* An error reply alone does not reclaim the page, and no uniform timeout is assumed.
 Finality == \E t \in Nat : ReleaseFailed(t)
 
 LEMMA SameDecision ==
@@ -91,12 +87,12 @@ THEOREM LegacyArchitectureImpossibility ==
   BY PhysicalImpossibility DEF LegacyArch_Axioms
 
 (*************************************************************************
- stop-evidence CONSISTENCY WITNESS, not a proof about PdCore.tla.
- On delayed trace k: last old access at k+1; trustworthy stop evidence at
- k+2; reclaim and initialize the new generation then; consume from k+3.
- On the failed trace: sound local teardown evidence at time 1, then reclaim.
- Eventual availability of this evidence is an EXTRA environment premise.
- A mere software label does not cause the old hardware access to disappear.
+ This witness shows consistency when sound stop evidence eventually arrives.
+ In delayed execution k, the last old access occurs at k+1. Evidence at k+2
+ permits reclamation and initialization; consumption starts at k+3.
+ The failed execution receives teardown evidence at time 1 before reclamation.
+ Eventual evidence is an additional environment assumption. A software label
+ alone cannot stop hardware access. This witness does not prove PdCore.tla.
 *************************************************************************)
 EvidenceAccess(k, t) ==
                  t = k + 1

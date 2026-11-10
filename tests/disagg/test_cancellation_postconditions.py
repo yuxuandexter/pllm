@@ -1,4 +1,4 @@
-"""the contract: QuarNoReg, LedgerProtocol cancellation, and full-slot launch checks vectorization (CPU)."""
+"""Cancellation and launch checks must hold even when full invariant scans are off."""
 import json
 import logging
 from types import SimpleNamespace

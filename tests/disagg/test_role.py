@@ -1,13 +1,8 @@
-"""compatibility (the contract) in the glue: the ledger's instance role (ledger contract, role checks).
+"""Role checks reject invalid local calls before argument filtering or mutation.
 
-``RefLedger(..., role=None|"P"|"D")`` uses the Python ledger:
-a role refusal raises LedgerViolation containing
-``L.ROLE_REFUSED`` ("refused for this instance's role") before any argument pre-filter, and the
-state is unchanged.  Role unset = compatibility.  Then the glue: make_pd builds P / D ledgers with
-their role and logs it, D drops an untrusted bootstrap room outside [0, 2^63) before open_req,
-gen_for never opens a local incarnation on D, and a P/D pair with roles gives the same tokens as
-the colocated reference.
-"""
+An unset role keeps the unrestricted interface. Production managers set P or D,
+and decode filters untrusted rooms before they reach fatal ledger checks.
+Valid traffic must produce the same results with either interface."""
 
 from __future__ import annotations
 
@@ -51,7 +46,7 @@ def refused(led, fn, *a, gens=(), xids=(), eids=()):
 
 
 def not_role(led, fn, *a):
-    """Refused, but by the check it had before compatibility (not a role refusal)."""
+    """Distinguish an argument refusal from a role refusal."""
     with pytest.raises(L.LedgerViolation) as e:
         fn(*a)
     assert L.ROLE_REFUSED not in str(e.value), e.value
@@ -65,7 +60,6 @@ def d_landed_visible(led, g, ntok):
     return x
 
 
-# ------------------------------------------------------------------------------- 1. construction
 def test_role_is_set_once_and_read_only():
     for role in (None, "P", "D"):
         assert L.RefLedger(16, LAY_D, D_INST, role=role).role == role
@@ -99,9 +93,8 @@ def test_the_role_is_checked_before_the_layout():
         L.RefLedger(16, LAY_D[:3], D_INST, role="D")
 
 
-# ------------------------------------------------------------------------------- 2. unset
 def test_role_unset_keeps_every_call_that_a_role_refuses():
-    """Role unset (compatibility): each call that P or D refuses below still has its old answer."""
+    """An unset role preserves the unrestricted interface for both sides."""
     led = mk(None)
     g = led.open_req(-1)  # a local request
     assert len(led.alloc(g, 2)) == 2
@@ -118,7 +111,6 @@ def test_role_unset_keeps_every_call_that_a_role_refuses():
     led.check()
 
 
-# ------------------------------------------------------------------------------- 3. D refuses
 @pytest.mark.parametrize("room,ok", [
     (-1, False), (-(1 << 63), False), (1 << 63, False), ((1 << 64) - 1, False),
     (0, True), (1, True), ((1 << 63) - 1, True),
@@ -227,7 +219,6 @@ def test_d_keeps_its_own_path():
     led.check()
 
 
-# ------------------------------------------------------------------------------- 4. P refuses
 def test_p_refuses_every_d_method_before_its_pre_filters():
     led = mk("P", LAY_P, P_INST)
     g = led.open_req(-1)
@@ -265,7 +256,6 @@ def test_p_keeps_its_own_path():
     led.check()
 
 
-# ------------------------------------------------------------------------------- 5. role world
 class _Rec:
     """Records every call's (method, args, result or exception type) of one ledger."""
 
@@ -316,7 +306,6 @@ def test_randomized_world_with_roles_is_the_world_without(seed, monkeypatch):
     assert len(a) > 100 and a == b
 
 
-# ------------------------------------------------------------------------------- 6. glue (toy)
 def test_decode_drops_a_room_outside_the_i64_range_before_open_req():
     """D (role D) gets rooms from an untrusted router: one outside [0, 2^63) is refused by
     DecodePD.add_request (counted, no ledger call), so it can never reach open_req and stop D;
@@ -351,7 +340,6 @@ def test_decode_drops_a_room_outside_the_i64_range_before_open_req():
         d.close()
 
 
-# ------------------------------------------------------------------------------- 7. glue (Scheduler)
 torch = pytest.importorskip("torch")
 
 from minisgl.disagg import scheduler_pd as SPD  # noqa: E402
@@ -469,9 +457,9 @@ def test_scheduler_d_answers_a_bad_room_with_an_error_and_keeps_serving(room):
 
 @pytest.mark.parametrize("ps,overlap", [(1, True), (4, True), (1, False), (4, False)])
 def test_pd_pair_with_roles_matches_colocated(ps, overlap):
-    """End to end on the CPU: P (role P) and D (role D) through the real Scheduler give the
-    colocated reference tokens (the PD output of df853bc, test_pd_matches_colocated); D's
-    ledger only ever saw rooms in [0, 2^63), P's only local opens."""
+    """Role-specific ledgers must match colocated output through the real CPU scheduler.
+
+    Decode receives only valid bootstrap rooms; prefill opens only local requests."""
     p, d, _, _ = pd_pair(ps)
     rooms = {"P": [], "D": []}
     for s, side in ((p, "P"), (d, "D")):

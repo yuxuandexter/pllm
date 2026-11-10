@@ -1,4 +1,4 @@
-"""the contract: accounting, lifecycle, fail-closed export and real CPU scheduler wiring."""
+"""Timing must preserve accounting, lifecycle behavior, and invalid-export detection."""
 from copy import deepcopy
 import inspect
 import json

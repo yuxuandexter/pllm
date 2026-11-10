@@ -1,17 +1,9 @@
-"""Red team ACK deadline quarantine (ACK deadline quarantine): D's ACK-timeout path (``decode.py`` 'aborting' branch).
+"""An abort timeout cannot prove that prefill's write has stopped.
 
-D aborts a transfer while P's engine call is still running, so P cannot acknowledge; after
-``ack_timeout`` D has no stopped evidence and must quarantine the exposed pages for good
-(CT-QUAR / Q-E: a timeout is not evidence).  The red team's mutant MACK (``mut_MACK.sh``: the
-timeout taken as ``d_stopped``) passed the whole suite before these tests.
-
-1. ``test_red_ack.py``'s scenario with assertions (toy 2P1D, real TCP, fake RDMA): blocked prefill hangs ->
-   D aborts -> ACK timeout -> the 6 pages are quarantined and never handed out again -> three
-   long requests through healthy prefill -> blocked prefill's old write lands and its late ACK is dropped; every KV read
-   of the live requests is checked (``bad_reads``).
-2. The same path on the real mini-sglang Scheduler (stub engine), with ``ack_timeout`` coming
-   from the config field behind ``--disaggregation-ack-timeout``.
-"""
+Hold the write past ack_timeout and verify permanent quarantine while healthy
+requests reuse the remaining pool. Then let the old write land and check that
+its late acknowledgement cannot release those pages or corrupt live requests.
+Exercise both the toy TCP system and the real scheduler with a CPU engine."""
 
 from __future__ import annotations
 
@@ -35,7 +27,7 @@ def test_ack_timeout_quarantines_and_the_late_write_is_never_read(cluster):
     assert run_until(lambda: d.pd.stats()["aborting"] == 0, nodes, timeout=5)
     st = d.ledger.stats()
     assert d.pd.stats()["ack_timeouts"] == 1
-    assert st["quarantined_cancelled"] == 6 and st["quarantined"] == 6, st  # MACK: 0
+    assert st["quarantined_cancelled"] == 6 and st["quarantined"] == 6, st
     assert st["free"] == d.ledger.num_pages - 6
     want = {}
     for room in range(2, 5):  # D's pages are reused through the healthy prefill, long decodes
@@ -48,7 +40,7 @@ def test_ack_timeout_quarantines_and_the_late_write_is_never_read(cluster):
     p0.backend.hang.set()  # the old write lands now, into the quarantined pages
     assert run_until(lambda: all(u in d.outputs for u in want) and not d.running, nodes,
                      timeout=10)
-    assert d.bad_reads == 0  # MACK: > 0 (the late bytes are read by the live requests)
+    assert d.bad_reads == 0
     for uid, prompt in want.items():
         assert d.outputs[uid] == expected_output(prompt, 30)
     assert bad not in d.outputs
@@ -60,8 +52,7 @@ def test_ack_timeout_quarantines_and_the_late_write_is_never_read(cluster):
 
 
 def test_ack_within_the_timeout_frees_the_pages(cluster):
-    """Contrast: the same abort with blocked prefill's call returning before ack_timeout -> ACK = stopped
-    evidence, nothing quarantined (the path test_pd_glue covers with the default 30 s)."""
+    """Completion before ack_timeout supplies stop evidence and avoids quarantine."""
     (p0,), (d,) = cluster(d_pages=32, ack_timeout=5.0)
     p0.backend.hang.clear()
     bad = send(p0, d, 1, [9] * 6, 3)

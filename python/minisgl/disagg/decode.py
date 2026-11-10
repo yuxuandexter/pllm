@@ -1,20 +1,10 @@
-"""D side of PD disaggregation: connect to P, preallocate, publish destinations, accept KV.
+"""Decode accepts KV only after transfer completion and GPU visibility.
 
-Shape follows SGLang's decode side (SGLang control plane; request lifecycle): prealloc queue -> transfer queue
--> ready for decode.  Page decisions are the ledger's:
-
-    open_req + alloc      destination pages (PRIVATE, new gen)
-    d_expect              expose them to one P instance; returns the never-reused xid
-    d_landed              P's kv_done (stopped evidence; checked against peer/room/gen/xid)
-    d_mark_visible        after the GPU flush (the contract: on by default; it runs before d_landed)
-    d_stopped             P's abort_ack / stopped kv_fail
-    d_unstopped           timeout, failed write, unacknowledged abort -> QUARANTINED forever
-    peer_lost             P gone: every posted transfer from it -> QUARANTINED
-    release               the request is finished or aborted
-
-Timeouts never free a page (lifecycle contract step-1 rule): the waiting timeout sends ABORT to P and
-quarantines at once; an abort whose ACK does not come within ``ack_timeout`` is quarantined.
-"""
+The ledger owns destination allocation, exposure, and release. Every notice must
+match the peer, room, generation, and transfer ID. A waiting timeout sends ABORT
+and quarantines the pages immediately. An abort without an acknowledgement by
+ack_timeout also quarantines them: elapsed time cannot prove a remote write has
+stopped."""
 
 from __future__ import annotations
 
@@ -45,7 +35,7 @@ class _DReq:
     t_pub: float = 0.0
     first_token: int = -1
     extra_pages: int = 0  # decode pages this request will need after the transfer
-    state: str = "queued"  # queued -> waiting -> ready -> taken | aborting | failed | done
+    state: str = "queued"
     rid: str = ""  # client request id (router), for the identity log lines
 
 
@@ -53,7 +43,7 @@ class _DReq:
 class _Conn:
     addr: Tuple[str, int]
     cid: int = 0
-    state: str = "connecting"  # connecting -> ready | dead
+    state: str = "connecting"
     inst: int = 0
     session: str = ""
     t0: float = 0.0
@@ -70,7 +60,7 @@ class DecodePD:
                  flush_hook: Callable[[], None] | None = None,
                  checksum_fn: Callable[[List[int]], List[int]] | None = None,
                  checksum_fatal: bool = False) -> None:
-        self.ledger = T.wrap(ledger, inst, "D")  # trace lines (compatibility), calls unchanged
+        self.ledger = T.wrap(ledger, inst, "D")
         self.backend = backend
         self.layout = list(layout)
         self.inst = inst
@@ -80,8 +70,7 @@ class DecodePD:
         self.hb_interval = hb_interval
         self.hb_timeout = hb_timeout
         self.flush_hook = flush_hook
-        # per-write KV checksum (compatibility): D recomputes over its destination pages after the
-        # flush and before d_landed; None = off.  checksum_fatal: raise LedgerViolation (stop)
+        # Checksums compare visible destination bytes with the source before acceptance.
         self.checksum_fn = checksum_fn
         self.checksum_fatal = checksum_fatal
         self.ledger.event("role", flush=flush_hook is not None)
@@ -102,14 +91,12 @@ class DecodePD:
                                          "kv_checksum_ok": 0, "kv_checksum_mismatch": 0,
                                          "kv_checksum_missing": 0, "kv_checksum_ns_total": 0}
 
-    # ------------------------------------------------------------------ scheduler API
     def add_request(self, uid: int, room: int, host: str, port: int, ntokens: int,
                     tok_hash: str, max_new_tokens: int = 0, now: float | None = None,
                     rid: str = "") -> bool:
         now = time.monotonic() if now is None else now
         if not M.room_ok(room):
-            # compatibility (the contract): the router is untrusted; a room outside [0, 2^63) would reach
-            # open_req, which D's core refuses (LedgerViolation = D stops), so drop it here
+            # Reject untrusted rooms here so malformed router input cannot stop the ledger.
             self.counters["bad_rooms"] += 1
             logger.warning("PD decode drop inst=%#x rid=%s uid=%d room=%r: bootstrap_room outside "
                            "[0, 2^63)", self.inst, rid, uid, room)
@@ -198,7 +185,7 @@ class DecodePD:
             ok = self.hub.send(c.cid, M.to_p(M.XFER_REQ, room=r.room, gen=gen, xid=r.xid,
                                              ntokens=r.ntokens, tok_hash=r.tok_hash,
                                              pages=self.ledger.pages_of(gen)[:need],
-                                             # PdCore[05e988a5] DRecvReq:678; the contract(ii).
+                                             # Keep the D-created exposure descriptor intact for independent validation at P.
                                              descriptor=(self.ledger.d_descriptor(r.xid)
                                                          if hasattr(self.ledger, "d_descriptor")
                                                          else None)))
@@ -262,7 +249,6 @@ class DecodePD:
     def shutdown(self) -> None:
         self.hub.shutdown()
 
-    # ------------------------------------------------------------------ internals
     def _connect(self, addr: Tuple[str, int], now: float) -> None:
         c = _Conn(addr, t0=now)
         self.conns[addr] = c
@@ -283,7 +269,7 @@ class DecodePD:
             self.hub.close(c.cid)
         if prev == "ready" and c.inst:
             self.counters["peers_lost"] += 1
-            self.ledger.peer_lost(c.inst)  # posted transfers from it -> QUARANTINED
+            self.ledger.peer_lost(c.inst)  # Peer loss cannot prove that its posted writes have stopped.
         for r in list(self.reqs.values()):
             if r.addr != c.addr:
                 continue
@@ -295,11 +281,10 @@ class DecodePD:
                              f"prefill instance lost ({why}, pages quarantined)")
 
     def _checksum_ok(self, r: _DReq, msg: Dict) -> bool:
-        """Per-write KV checksum (per-write integrity primary criterion): recompute over the destination pages
-        after the flush, before d_landed.  A mismatch means the bytes D would read are not the
-        bytes P sent: the transfer is treated as failed without stopped evidence (pages
-        QUARANTINED, request failed with an error, counted); with ``checksum_fatal`` the process
-        stops instead (LedgerViolation)."""
+        """Compare visible destination bytes with P's checksum before accepting KV.
+
+        A mismatch provides no stop evidence, so the request fails and its pages
+        stay quarantined. checksum_fatal instead raises LedgerViolation."""
         if "csum" not in msg:
             self.counters["kv_checksum_missing"] += 1  # P runs without checksums: accepted
             return True
@@ -386,8 +371,7 @@ class DecodePD:
             mine = (r is not None and r.state == "waiting"
                     and (r.peer, r.room, r.gen) == (c.inst, room, gen))
             if mine and self.flush_hook is not None:
-                # the contract: make the landed RDMA writes visible to the GPU before the ledger
-                # records the landing (cudaDeviceFlushGPUDirectRDMAWrites, on by default)
+                # Flush GPUDirect writes before the ledger allows a kernel to read them.
                 t0 = time.perf_counter_ns()
                 self.flush_hook()
                 dt = time.perf_counter_ns() - t0

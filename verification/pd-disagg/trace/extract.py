@@ -1,56 +1,39 @@
-"""trace conformance extractor: glue run logs -> per-run PdCore traces.
+"""Map recorded ledger activity to PdCore traces without inferring run assumptions.
 
-Three inputs:
-  extract.py <jsonl dir> <out dir>            CPU runs: trace_shim.py JSONL, one file per test (compatibility, 542b1ac)
-  extract.py --pdt <step dir> <out dir>       GPU runs: the glue's own PDT lines (minisgl.disagg.trace, 0966bdd+)
-                                              in <step dir>/{P*,D*}.log, merged across processes (README §11)
-  extract.py --pdtcpu <dir> <out dir>         CPU runs of glue df853bc+: the glue's own PDT records, one .pdt file
-                                              per test (pdt_capture.py), all instances of the test process in one
-                                              file in seq order (one counter, one lock: no merge needed)
+Inputs:
+  extract.py <jsonl dir> <out dir>
+      Read trace_shim.py JSONL, one file per CPU test.
+  extract.py --pdt <step dir> <out dir>
+      Merge PDT records from <step dir>/{P*,D*}.log in causal order.
+  extract.py --pdtcpu <dir> <out dir>
+      Read one .pdt file per CPU test. All instances share its sequence counter.
 
-Step mode (compatibility, README §16; glue df853bc+): a process whose PDT records contain per-step lines (k = "step":
-klaunch / kdone) is read in step mode, chosen ONLY by the presence of those lines (never guessed):
-  D klaunch(S) -> DStep (KLaunch(i, s, rows) on some free slot s, items <<r, g, p>>: row r from the item's table
-                 row binding, g / p from the item's gen), every step, not only a gen's first launch; kdone(S) ->
-                 DStepDone (KLand ; KDone of the slot whose read set is S's items).  KR = KR_STEPS (default 2: the
-                 overlap scheduler launches the next step before the last one is done, scheduler.py:98-122@df853bc),
-                 written into the trace's scale; more than KR in flight has no free slot (NOT_CONSUMED, fail-closed).
-                 D read lines: no event (checked against the klaunch).  The inferred DKDone (inf = 3) of compatibility is
-                 not used.
-  P klaunch(S) -> PStep (ChkPreAll: every item's P record is in its prefill); kdone(S) -> PFill (Land ; PPoll) for
-                 each gen whose complete line has at_seq = this kdone's seq (the gen's last prefill step).  P read
-                 and complete lines: no event (complete: at_seq checked).
-  Every seq is a line on df853bc: a seq hole is an ERROR on P and D (the documented SIGKILL loss is a missing tail,
-  never a hole).  Without step lines everything is as in compatibility (inferred DKDone, untraced completion seq holes on P).
+Explicit klaunch and kdone records select step mode. Each decode launch maps to
+DStep, and its completion maps to DStepDone. KR_STEPS bounds in-flight decode
+steps independently of the trace; its default of two covers overlap. If no model
+slot is free, the event is NOT_CONSUMED. Prefill launches map to PStep, and the
+last prefill completion maps to PFill. Read and complete records cross-check
+these step records. Sequence gaps are errors in step mode. Legacy logs without
+step records retain inferred completion handling.
 
-Constants come ONLY from the run declaration (independent run declarations), never from what the system under test logs:
-  run_decl.tsv (in the jsonl dir, or RUN_DECL=<file>): lines "<fnmatch pattern on the jsonl file name> <env>",
-  first match wins, no match = production.  env:
-    production  the contract push design (Flush TRUE, HVisible widest, ...)     every GPU run (--pdt: always)
-    cpu-toy     same constants (FakeBackend + toy engine; D has the flush hook)
-    cpu-stub    Flush FALSE, HVisible narrow (scheduler stub: CPU memmove, visible at once; no flush hook)
-  A D built without a flush hook in a run NOT declared cpu-stub is an ERROR (meta error=NOFLUSH_UNDECLARED); the
-  trace is still written with the declared constants so the raw TLC result can be looked at, but run_tv.sh never
-  reports it as CONSUMED.  The run's outcome (pytest outcome / GPU step status) goes into <name>.meta; run_tv.sh
-  never reports CONSUMED for a run whose outcome is not "passed".
+Constants come from run_decl.tsv or RUN_DECL, with the first matching filename
+pattern selecting the environment. Unmatched files use production assumptions.
+production and cpu-toy require the flush hook. cpu-stub uses immediately visible
+memmove transfers with Flush FALSE and narrow HVisible. GPU logs always use
+production assumptions. Missing required flush hooks are errors; run_tv.sh also
+refuses CONSUMED when the recorded test or run outcome is not passed.
 
-For every run it writes  <out>/<name>.ndjson   (one model event per line, the trace)
-                         <out>/TL_<name>.tla   (module EXTENDS PdTrace, Log == << ... >>)
-                         <out>/TL_<name>.cfg   (constants: declared env, scale from the trace)
-                         <out>/<name>.meta     (env, outcome, error, source)
-and one line per run into <out>/extract.tsv.  --pdt also writes per-round projections <step>__<round> and, in
-<out>/inc/, one trace per distinct request-incarnation projection (sig<k>) with inc/incarnations.tsv mapping each
-request incarnation (rid, room, g) to its signature trace.
+Each run writes <name>.ndjson, TL_<name>.tla, TL_<name>.cfg, and <name>.meta,
+plus a row in extract.tsv. GPU inputs also produce per-round and per-incarnation
+projections, with inc/incarnations.tsv mapping request identities to traces.
 
-Mapping (README §2): model instance = P instances 1..NPI then D instances; model slot r = room (order of first
-use); model generation g = k-th exposure of that room by any D; model xfer x = k-th d_expect (in merged order);
-model page = one abstract page per page group (D: the exposed pages of one D gen; P: the source pages of one P gen;
-fresh, never reused, PPL = most groups on one instance).
-Environment switches: EXACT_P=1 (P pages observed exactly: source-release ordering cross-check), FIN_CALLERS=<f:fn,..>
-(CPU: these D release callers are a finish), FOLD=finish_drain_fold (a D finish-release observed DRAINING is written as FREE,
-PdCore's only non-sealing DFinish ending, tagged fold=finish_drain_fold: the known model-narrow case overlapped-finish abstraction folded, like the P
-side's held), MAX_ALL_EVENTS (--pdt: whole-step trace only up to this many events, default 6000).
-"""
+Number instances with prefill first, rooms by first use, and transfers in merged
+order. Represent each generation's page group with one fresh abstract page;
+PPL is the largest group count on any instance. EXACT_P=1 retains observed P
+page states. FIN_CALLERS selects CPU release callers treated as normal finish.
+FOLD=finish_drain_fold maps a draining decode finish to the model's free ending
+and marks that abstraction explicitly. MAX_ALL_EVENTS caps whole GPU traces at
+6000 events by default; it does not change the per-incarnation projections."""
 
 from __future__ import annotations
 
@@ -63,7 +46,7 @@ import re
 import sys
 from collections import Counter, OrderedDict
 
-# ledger constants (minisgl/disagg/ledger.py@542b1ac:49-82, unchanged at 2ec5fe6)
+# Keep wire-state constants independent of the implementation import.
 FREE, PRIVATE, DRAINING, QUAR = "free", "private", "draining", "quarantined"
 X_POSTED, X_LANDED, X_VISIBLE, X_STOPPED, X_QUARANTINED = 1, 2, 3, 4, 5
 E_POSTED, E_SUBMITTED, E_ABORT_REQ, E_DONE, E_FAILED, E_CANCELLED = 1, 2, 3, 4, 5, 6
@@ -71,9 +54,8 @@ OK, BAD_LEN = 0, -4
 SEND_NOTHING, SEND_DONE, SEND_ACK, SEND_FAIL_UNSTOPPED = 0, 1, 2, 3
 QNAMES = {1: "peer_lost", 2: "timeout", 3: "transfer_failed", 4: "cancelled"}
 FIELDS = ("k", "i", "pe", "r", "g", "x", "p", "ok", "rs", "pg", "a", "seq")
-# compatibility (step mode): the per-step events and the extra field they carry into the TLA trace (it = <<<<r, g, p>>, ...>>
-# the step's items; the kernel step slot is chosen by PdTrace (\E s), slots are symmetric); other events keep exactly
-# FIELDS (old traces stay byte-identical)
+# Step records carry row, generation, and page identities. PdTrace chooses a
+# symmetric kernel slot; other events retain the legacy field layout.
 STEP_FIELDS = {"DStep": ("it",), "DStepDone": ("it",), "PStep": ("it",)}
 def event_fields(ev):
     return FIELDS + STEP_FIELDS.get(ev['k'], ()) + (("ka",) if "ka" in ev else ())
@@ -81,12 +63,11 @@ def event_fields(ev):
 
 STEP_KINDS = tuple(STEP_FIELDS)
 KR_STEPS = int(os.environ.get("KR_STEPS", "2"))
-# compatibility (PdCore a8a92672, the contract, failed-transfer mapping): the exact mapping.  p_post (res > 0) = PReg (PdCore PPost: register,
-# iv = reg); p_begin True = PSubmit; p_begin False on a POSTED entry / p_abort on a POSTED entry / P peer_lost =
-# PCancelReg; a D gen's first launch = DRead (KLaunch on slot 1) followed by an inferred DKDone (KLand ; KDone: D's
-# step_done writes no trace line).  P pages are observed exactly (EXACT_P=0 folds private / draining to held, compatibility).
+# Separate registration from submission so cancellation supplies stop evidence
+# only before the engine call. Legacy decode logs infer completion after the
+# first launch. EXACT_P retains observed source states instead of folding them.
 
-# the run declaration -> constants (independent run declarations: the only place constants come from)
+# Run declarations select assumptions independently of observed behavior.
 ENV_CONSTS = {
     "production": {},
     "cpu-toy": {},
@@ -146,17 +127,18 @@ def group_state(states, side):
 
 
 def number(out, notes, scale_extra=None):
-    """Internal events (raw room / g / x, glue instance ids, page keys) -> model events + scale.
-    r = order of first appearance of the room, g = rank of the raw generation among this list's generations of that
-    room, x = order of first appearance; instances: P's then D's in order of first use (sorted by the given order
-    key _io); one fresh abstract page per page key.  Used for whole runs and for projections alike."""
+    """Number raw identities consistently for whole runs and projections.
+
+    Rooms and transfers follow first appearance. Generations are ranked within
+    each room; instances put prefill before decode. Each page key gets a fresh
+    abstract page so unrelated lifetimes cannot alias."""
     rooms, gens, xs = OrderedDict(), {}, OrderedDict()
     for ev in out:
         rooms.setdefault(ev["room"], None)
         gens.setdefault(ev["room"], set()).add(ev["graw"])
         if ev["xraw"]:
             xs.setdefault(ev["xraw"], None)
-        for (rr, rm, gw, xw, pk, row) in ev.get("_items", ()):  # step events (compatibility): every item's identity
+        for (rr, rm, gw, xw, pk, row) in ev.get("_items", ()):  # step events: every item's identity
             rooms.setdefault(rm, None)
             rooms.setdefault(rr, None)
             gens.setdefault(rm, set()).add(gw)
@@ -195,7 +177,7 @@ def number(out, notes, scale_extra=None):
         if ev["k"] in STEP_KINDS:
             nstep += 1
             its = [[ridx[rr], grank[rm][gw], pnum(pk)] for (rr, rm, gw, xw, pk, row) in ev["_items"]]
-            # pe of a step event = its own instance (a step has no single peer; the field is not used by its program)
+            # A step has no single peer; its program ignores the peer field.
             o = dict(k=ev["k"], i=i, pe=i, r=r, g=g, x=x, p=p, ok=True, rs="", pg="", a=0, seq=ev["seq"])
             if ev["k"] == "DStep":
                 live.add(ev["_step"])
@@ -237,9 +219,9 @@ def number(out, notes, scale_extra=None):
 
 
 def project(out, keys):
-    """The events of the request incarnations keys = {(room, raw g)}: other events dropped; a step event keeps only
-    its items of these incarnations (dropped when none is left; a DStepDone whose DStep is gone is dropped in
-    number())."""
+    """Keep only the selected request incarnations, including their step items.
+
+    Drop empty steps. number() removes completions whose launches were omitted."""
     res = []
     for ev in out:
         if "_items" in ev:
@@ -278,16 +260,15 @@ class Run:
 
     def extract(self):
         evs = [e for e in self.evs if e.get("inst") in self.side or e["k"] == "log"]
-        # ---- pass 1: identities ------------------------------------------------------------
-        dgen = {}       # (D inst, h) -> dict(room, xid, pages, peer)
-        dxid = {}       # (D inst, xid) -> (D inst, h)
-        open_room = {}  # (inst, h) -> room arg of open_req
+        dgen = {}       # Keep raw transfer and request identities separate until event numbering.
+        dxid = {}
+        open_room = {}
         inc = Counter()
-        xorder = {}     # (D inst, xid) -> raw x
-        p_uid_gen = {}  # (P inst, gen) -> uid
-        p_match = {}    # (P inst, uid) -> (D inst, d_h)
-        p_post = {}     # (P inst, gen) -> (D inst, d_h, xid)
-        last_fill = {}  # (P inst, gen) -> seq of the last complete that wrote it
+        xorder = {}
+        p_uid_gen = {}
+        p_match = {}
+        p_post = {}
+        last_fill = {}
         for e in evs:
             if e["k"] == "pdone":
                 p_uid_gen[(e["inst"], e["gen"])] = e["uid"]
@@ -318,7 +299,6 @@ class Run:
             if (pi, gen) not in pgen_d and (pi, uid) in p_match:
                 pgen_d[(pi, gen)] = p_match[(pi, uid)]
 
-        # ---- pass 2: events ------------------------------------------------------------------
         out = []
         first_launch = set()
         pending_flush = Counter()
@@ -562,8 +542,8 @@ def read_meta(tdir, name):
 
 def write_run(outdir, name, tevs, scale, env, meta):
     if scale["NPI"] + scale["NDI"] > 4 and "SCALE_GT4" not in meta.get("error", ""):
-        # PdCore's Loc(p) has 4 locations (PdCore.tla:154@a8a92672): a 5th instance's pages are not its own, every
-        # event of it would be NOT_CONSUMED for a reason that is the checker's scale, not the run (fail-closed: ERROR)
+        # PdCore has four locations. Larger runs exceed the model's addressing domain,
+        # so report a scale error rather than a protocol rejection.
         meta = dict(meta, error=(meta.get("error") + "," if meta.get("error") else "") + "SCALE_GT4_INSTANCES")
     with open(os.path.join(outdir, f"{name}.ndjson"), "w") as f:
         for ev in tevs:
@@ -614,9 +594,6 @@ def main_cpu(src, outdir):
           f"{sum(1 for r in rows if r[6])} ERROR (declaration {decl_path}) -> {outdir}")
 
 
-# ============================================================================================================
-# GPU: the glue's PDT lines (minisgl/disagg/trace.py@0966bdd..06b6baf)
-# ============================================================================================================
 RX_TS = re.compile(r"\[(\d{4}-\d\d-\d\d)\|(\d\d:\d\d:\d\d)")
 STATUS = {"PASS": "passed", "FINDING": "finding", "FAIL": "failed", "INCONCLUSIVE": "inconclusive",
           "ERROR": "failed"}
@@ -654,9 +631,11 @@ def pg_counts(post, side):
 
 
 def pg_release(rec, side, quarx):
-    """Page state after a release: from post counts if logged, else from res = pages freed now
-    (ledger.py:425-428@2ec5fe6, lib.rs:329-338): all freed -> free; none freed -> draining (P: held unless
-    EXACT_P), unless this D xfer was quarantined (then unobserved); partly -> mixed."""
+    """Prefer observed post-release states over inference from the freed-page count.
+
+    Without a snapshot, full release means free and partial release means
+    mixed. A zero count means draining, or held on P unless EXACT_P is set.
+    Quarantined decode transfers remain unobserved."""
     if rec.get("post"):
         return pg_counts(rec["post"], side), "counts"
     n = len(unruns(rec.get("pages", [])))
@@ -680,7 +659,7 @@ class PdtStep:
     def __init__(self, stepdir, group="", single=None):
         self.dir = stepdir
         self.notes, self.errors = [], []
-        self.procs = OrderedDict()   # label -> records
+        self.procs = OrderedDict()
         self.side, self.inst_of, self.label_of, self.flush = {}, {}, {}, {}
         self.single = single
         self.router = {}
@@ -701,7 +680,7 @@ class PdtStep:
             self.gaps[label] = missing
             if self.side[label] == "D" and missing:
                 self.errors.append(f"{label}: {len(missing)} D seqs missing (lost lines): {missing[:5]}")
-            elif self.stepmode[label] and missing:  # df853bc: every seq is a line, a hole is a lost line on P too
+            elif self.stepmode[label] and missing:  # Step-mode records account for every sequence number on both sides.
                 self.errors.append(f"{label}: {len(missing)} P seqs missing in step mode (lost lines): {missing[:5]}")
         self._post_load(stepdir, group, single)
         self.array_audit = []
@@ -786,9 +765,9 @@ class PdtStep:
 
     def _post_load(self, stepdir, group, single):
         """After the seq checks: the untraced completion hole witness (old P logs) and the router lines (GPU step dirs)."""
-        # untraced completion: P complete calls leave seq holes (trace.py:259@2ec5fe6).  If the holes are exactly one per P step
-        # (#holes == #distinct steps of the first-launch lines == max step, and hole k comes after every first
-        # launch of step k), hole k IS complete(step k) (steps complete in launch order): step-bound witness.
+        # Legacy prefill completion can be identified only when each step has one gap
+        # after all of its first-launch records. Completion order then binds each gap
+        # to a step; other gaps need weaker evidence.
         self.step_hole = {}
         for label, recs in self.procs.items():
             if self.side[label] != "P" or self.stepmode[label] or single is not None:
@@ -817,12 +796,13 @@ class PdtStep:
                         self.router.setdefault(r.get("rid", ""), []).append(r.get("outcome", "?"))
 
     def merge(self):
-        """Kahn merge of the per-process sequences.  Cross-process edges (message causality, README §11):
-        publication-before-match D publish (D, xid)  ->  every P line naming (D, xid): match, p_post, p_abort, p_begin, p_done (dinfo)
-        sender-before-receiver-completion P p_done / p_abort / rejected p_post naming (D, xid)  ->  D flush and D landed / stopped of xid
-           (kv_done / abort reply / refusal; a D quarantine on a timeout has no edge).
-        Ties: earliest log second, then P before D, then file order.
-        CPU (single file, one process): the file order is the seq order of every instance: nothing to merge."""
+        """Merge process sequences using message causality.
+
+        Decode publication precedes every prefill record that names that transfer.
+        Prefill completion, abort, or refusal precedes the corresponding decode
+        flush and landing or stop evidence. Timeout quarantine adds no such edge.
+        Break ties by log time, prefill before decode, then file order.
+        A single CPU file already has one sequence order and needs no merge."""
         if self.single is not None:
             return list(self._file_order)
         pub, pmsg = {}, {}
@@ -883,10 +863,9 @@ class PdtStep:
         return merged
 
     def extract(self, merged):
-        # ---- pass 1: identities, in merged order ---------------------------------------------
         dgen, dxid, inc, xorder = {}, {}, Counter(), {}
         p_match, p_uid, p_post, entries = {}, {}, {}, {}
-        cpl_at = {}   # step mode, P: (inst, gen) -> at_seq of its complete line = the kdone of its last prefill step
+        cpl_at = {}   # Associate each prefill generation with its final completion sequence.
         for r in merged:
             src = r["_src"]
             if self.side[src] == "D" and r.get("m") == "d_expect" and isinstance(r.get("res"), int) and r["res"] > 0:
@@ -911,7 +890,6 @@ class PdtStep:
         for (pi, gen), uid in p_uid.items():
             if (pi, gen) not in pgen_d and (pi, uid) in p_match:
                 pgen_d[(pi, gen)] = p_match[(pi, uid)]
-        # ---- pass 2: events ------------------------------------------------------------------
         out, drops = [], Counter()
         first_launch, pgroups, pfilled, read_seq, quarx, read_info = set(), {}, set(), {}, set(), {}
         visible = set()   # D (inst, gen) whose transfer was made visible (the record runs: DLanded)
@@ -924,11 +902,10 @@ class PdtStep:
             kw.setdefault("seq", r["seq"])
             out.append(mk(k, inst, peer, d, pk, src=r["_src"], rid=d.get("rid", ""), **kw))
 
-        # ---- step mode (compatibility) -------------------------------------------------------------
-        launched = {}            # (inst, step) -> items of its DStep (D) / gens of its klaunch (P)
-        kl_gens = {}             # (inst, step) -> gens of the klaunch line (read-line cross-check)
-        kd_seq = {}              # (inst, step) -> seq of the kdone line (complete-line cross-check)
-        rowbind, gen_row = {}, {}  # D: (inst, row) -> gen bound at the gen's first launch; (inst, gen) -> row
+        launched = {}            # Track launches, completions, and row bindings independently for cross-checks.
+        kl_gens = {}
+        kd_seq = {}
+        rowbind, gen_row = {}, {}
         fly, maxfly, nstep = Counter(), Counter(), Counter()
         self.step_stats = {}
 
@@ -1096,9 +1073,8 @@ class PdtStep:
                         if kind == "DFin" and st == "drain" and "finish_drain_fold" in fold:
                             st, extra["fold"] = "free", "finish_drain_fold"  # the model's only non-shared finish ending
                         if sm and kind == "DFin":
-                            # step mode: a finish = Land ; DFinish only; a launched step that still reads the page
-                            # pins it (FreeOrDrain -> Drain), the compatibility stand-in DLaunchNext ; DFinishOvl is not
-                            # needed and would double the matching behaviours at every overlap finish (never merge)
+                            # Explicit step records already retain overlap read pins through DFinish.
+                            # Adding the legacy DLaunchNext and DFinishOvl pair would duplicate behaviors.
                             kind = "DFinS"
                         elif sm and kind == "DCancel" and key in visible:
                             # step mode, abort of a running record: its decode stream op is landed and polled, the
@@ -1133,7 +1109,7 @@ class PdtStep:
                         read_seq[(inst, gen)] = r["seq"]
                         read_info[(inst, gen)] = (r.get("step"), r.get("rd"), r.get("wr"))
                         emit("PRead", inst, dinst, d, ("P", inst, gen), r)
-                elif m == "complete":  # 06b6baf+ (or the Python ledger): the last prefill step of the request
+                elif m == "complete":  # The request has completed its final prefill step.
                     gen = r["h"]
                     dinst, d = dP(gen)
                     if d is not None and (inst, gen) not in pfilled:
@@ -1147,11 +1123,9 @@ class PdtStep:
                         continue
                     dinst = r.get("peer")
                     if (inst, gen) not in pfilled:
-                        # untraced completion (2ec5fe6 + Rust ledger): the complete line is lost, its seq is not.  Allowed gap:
-                        # step-bound (inf=1): the gen was launched whole (rd 0, wr = ntokens) in step s, and
-                        # complete(step s) = hole s (self.step_hole) lies before this post;
-                        # weak (inf=2, only when the holes are not one per step, or the launch was a chunk): some
-                        # hole lies after the gen's first launch and before the post.
+                        # Legacy logs may omit the completion record but retain its sequence gap.
+                        # Bind a gap to a step only for a whole-request launch with one gap per step.
+                        # Otherwise require a gap between the first launch and post, and mark the weaker inference.
                         lo = read_seq.get((inst, gen))
                         st, rd, wr = read_info.get((inst, gen), (None, None, None))
                         sh = self.step_hole.get(src)
@@ -1237,7 +1211,7 @@ class PdtStep:
 
 
 def round_of(rid):
-    """pd.serial.t0003 -> pd.serial ; pd.serial.e00 -> pd.serial ; 1P2D.burst.t0029.alone -> 1P2D.burst"""
+    """Group per-test and per-request projections under their parent run name."""
     m = re.match(r"^(.*?)\.[a-z]\d+", rid or "")
     return m.group(1) if m else (rid or "?")
 
@@ -1367,8 +1341,7 @@ def main_pdt(stepdir, outdir, group=""):
 
 
 def main_pdtcpu(src, outdir):
-    """CPU runs of glue df853bc+ (pdt_capture.py): one whole-run trace per test file <test>.pdt, constants from the
-    run declaration (as main_cpu), outcome from the file's end line."""
+    """Use declared assumptions and the end-line outcome for each CPU .pdt test."""
     os.makedirs(outdir, exist_ok=True)
     decl_path, rules = load_decl(src)
     rows = []

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Replay the original rejected-call fixed-schedule Harness, adding only observations.
-P role geometry is supplied by the actual build arguments before capture. D's
-real existing ledger is wrapped before the first request; no D state is invented.
-No ledger operation or return value is patched. Use the original injection trees.
-"""
+"""Replay the fixed rejection schedule with independent observations.
+
+Capture P's actual construction geometry and wrap D's existing ledger before
+the first request. Preserve operations, returns, and the original injections."""
 import argparse
 import json
 import os

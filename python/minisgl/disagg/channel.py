@@ -1,11 +1,9 @@
-"""P <-> D control channel: length-prefixed JSON over TCP (standard library only).
+"""TCP control channel between prefill and decode instances.
 
-Same role as SGLang's ZMQ PUSH/PULL sockets between prefill and decode (SGLang control plane "messages"):
-asynchronous, ordered per connection, no delivery guarantee once the peer is gone.  Unlike
-PUSH/PULL, a closed TCP connection is reported to the owner (``CLOSED`` event), which the glue
-turns into "peer lost".  All received messages land in one inbox that the scheduler thread
-drains; only ``send`` is called from other threads (serialized by a per-connection lock).
-"""
+Length-prefixed JSON preserves message order within a connection. A closed
+connection reports CLOSED so the owner can handle peer loss. Delivery is not
+guaranteed after disconnect. The scheduler drains one inbox; other threads may
+send under a per-connection lock."""
 
 from __future__ import annotations
 
@@ -40,7 +38,6 @@ class Hub:
         self._lsock: socket.socket | None = None
         self._stopped = False
 
-    # ------------------------------------------------------------------ setup
     def listen(self, host: str, port: int) -> int:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -108,7 +105,6 @@ class Hub:
                 pass
             self.inbox.put((cid, {"t": CLOSED}))
 
-    # ------------------------------------------------------------------ I/O
     def send(self, cid: int, msg: Dict) -> bool:
         """Best effort.  False if the connection is gone (the CLOSED event follows)."""
         with self._lock:
@@ -150,8 +146,7 @@ class Hub:
         self._stopped = True
         if self._lsock is not None:
             try:
-                # wakes the accept() blocked in _accept_loop (Linux: close() alone does not, and
-                # the thread, with its stack and malloc arena, outlived every shut-down P hub)
+                # shutdown wakes accept on Linux; close alone can leave the thread alive.
                 self._lsock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass

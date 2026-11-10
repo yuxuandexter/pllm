@@ -1,55 +1,31 @@
-"""Page ledger for PD disaggregation: the narrow interface and its implementation ``PdLedger``.
+"""KV page ownership and lifetime checks for PD disaggregation.
 
-The ledger is the only component that decides who may read or write which KV page and when a
-page changes state (lifecycle contract).  The Python glue (P / D managers, scheduler)
-calls it and follows its answers.  the ledger design: ``PdLedger`` (this file, pure Python) is the
-mainline implementation, checked against the design model PdCore.tla by trace validation and
-the mutation gate (source corruption checks); ``RefLedger`` stays as an alias.
-The interface uses plain ints, lists and tuples only, and never hands out a mutable internal object.
+PdLedger decides when pages may be read, written, shared, or reused. The managers
+and scheduler follow its results. RefLedger is a compatibility alias. Public
+queries return plain values and copies so callers cannot mutate ledger state.
 
-PdCore bindings: comments of the form ``PdCore[05e988a5] Name:line`` name the PdCore.tla action
-(or predicate) a primitive or check corresponds to, at the prefix-sharing PdCore SHA256 05e988a5 (the contract; full hash below).
-``k_launch`` checks its own result at run time (``_kargs_post``: the postconditions ``kargs_ok``
-/ ``k_read_ok`` Verus proved for the frozen Rust core, ledger contract), on in production.
+Action and invariant names refer to the prefix-sharing PdCore model in
+verification/pd-disagg/trace/PdCore.tla. Trace validation and mutation tests check
+the implementation against that design; they are not a refinement proof.
 
-PrefixSharing bindings use PdCore[05e988a5], the prefix-sharing design (SHA256
-05e988a5b9ca6b0e238b30217d2481d6463eaab5d5727b033dfa12455a8b63b7).
-the contract accepts one optional P prefix page; no radix, multi-page chain, or refinement proof is
-claimed. open_req(prefix_tokens=...) declares that page's complete token identity, before
-allocation or hit. The default None keeps the KernelReadPins path. All pages use the same physical pool.
+A PRIVATE page belongs to one request generation. Release leaves it DRAINING
+while a GPU step or transfer may still access it. Reuse requires evidence that
+every access has stopped. Without that evidence, the page stays QUARANTINED for
+the process lifetime. SHARED pages contain immutable prefix KV. A remapped DUP
+page remains pinned until its last local reader completes. Shared quarantine
+keeps a permanent holder rather than changing the page to QUARANTINED.
 
-Page states (lifecycle contract): SHARED is sealed immutable KV; DUP is a remapped candidate still pinned
-by a local step. Shared quarantine is a permanent holder, not the QUARANTINED page state.
+Local steps complete in stream order. Incoming transfers hold D's exposed pages;
+outgoing entries hold P's source pages. Generations and transfer IDs are never
+reused. Messages must match the peer instance, room, generation, and transfer ID
+or they are dropped and counted.
 
-    FREE         nobody owns the page; no in-flight access.
-    PRIVATE      owned by one live request incarnation ``gen``.
-    DRAINING     the owner released it but an in-flight access (a local GPU step, an incoming
-                 RDMA write on D, or an outgoing RDMA read on P) has not been proven stopped.
-    QUARANTINED  an access could not be proven stopped (timeout, peer loss, transfer failure).
-                 Step-1 rule (lifecycle contract, the contract): a quarantined page never returns to FREE in the
-                 lifetime of the process; it is only counted and reported.
+Prefix sharing supports one complete P prefix page, declared with prefix_tokens
+before allocation or hit. All pages use the same pool. Multi-page prefix chains
+are outside this implementation.
 
-The only transitions that need "stopped" evidence are leaving PRIVATE / DRAINING / QUARANTINED
-for FREE (and PRIVATE -> SHARED in step 2).  PRIVATE -> DRAINING and -> QUARANTINED need none.
-
-In-flight accesses (the in-flight ledger, lifecycle contract):
-    local step k     ``launch(k, items)`` .. ``complete(k)``; one CUDA stream, so steps complete
-                     in order (ArchivedRustLedger's inflight[k]).  KernelReadPins: ``k_launch`` / ``step_done`` are
-                     the same pair and also return the step's kernel arguments (kernel argument contract), so
-                     the kernels read exactly the slots the ledger checked.
-    D xfer xid       pages exposed to a P for RDMA WRITE (``d_expect``) .. landed / stopped /
-                     quarantined.  ``xid`` is issued by D's ledger, monotone, never reused.
-    P entry eid      source pages an RDMA WRITE may read (``p_post``) .. local completion
-                     (``p_done``).  ``eid`` is issued by P's ledger, monotone, never reused.
-
-Identity: every request incarnation gets a fresh ``gen`` (monotone, never reused).  Every
-message between P and D carries (peer instance, room, gen, xid); anything that does not match
-the current record is dropped and counted (``stats()['dropped_msgs']``).
-
-Errors: refusals that depend on untrusted input (peer messages, capacity) are returned as codes.
-Misuse by the glue or a broken invariant raises ``LedgerViolation``; the caller must treat it as
-fatal (fail-stop).
-"""
+Untrusted input and capacity refusals return codes. Invalid local calls and
+broken invariants raise LedgerViolation, which the caller must treat as fatal."""
 
 from __future__ import annotations
 
@@ -58,14 +34,12 @@ import sys
 import threading
 from typing import Dict, List, Protocol, Set, Tuple
 
-try:  # the k_launch postconditions are vectorised with numpy when it is there (it is in the
-    import numpy as _np  # glue env); without it the same checks run as plain Python loops
+try:  # Use NumPy views when available; the scalar fallback checks the same postconditions.
+    import numpy as _np
 except ImportError:  # pragma: no cover
     _np = None
 
-# ---------------------------------------------------------------------------------------------
-# constants (plain ints so that a PyO3 binding can expose the same values)
-# ---------------------------------------------------------------------------------------------
+# Plain integer constants keep the ledger interface independent of its implementation.
 
 FREE, PRIVATE, SHARED, DRAINING, QUARANTINED, DUP = 0, 1, 2, 3, 4, 5
 PAGE_STATE_NAMES = {FREE: "free", PRIVATE: "private", SHARED: "shared", DRAINING: "draining",
@@ -81,7 +55,6 @@ X_POSTED, X_LANDED, X_VISIBLE, X_STOPPED, X_QUARANTINED = 1, 2, 3, 4, 5
 E_POSTED, E_SUBMITTED, E_ABORT_REQ, E_DONE, E_FAILED, E_CANCELLED = 1, 2, 3, 4, 5, 6
 
 # quarantine reasons
-# same names and order as the Rust core's QReason (archived Rust ledger)
 Q_PEER_LOST, Q_TIMEOUT, Q_TRANSFER_FAILED, Q_CANCELLED = 1, 2, 3, 4
 Q_REASON_NAMES = {Q_PEER_LOST: "peer_lost", Q_TIMEOUT: "timeout",
                   Q_TRANSFER_FAILED: "transfer_failed",
@@ -102,8 +75,7 @@ REJ_DUP = -14          # (peer, peer_xid) already used or tombstoned (abort arri
 # results of p_done / p_abort: what the P glue must send
 SEND_NOTHING, SEND_DONE, SEND_ACK, SEND_FAIL_UNSTOPPED = 0, 1, 2, 3
 
-# KV layout descriptor exchanged in the handshake.  Indices 0..6 are unchanged from compatibility;
-# compatibility (Z3 finding layout identity, layout agreement §1) appended ``dtype`` and ``model_id``.
+# The handshake includes dtype and model identity because geometry alone is insufficient.
 LAYOUT_FIELDS = ("num_layers", "page_size", "kv_heads", "head_dim", "itemsize", "pool_pages",
                  "base_ptr", "dtype", "model_id")
 # fields two instances must agree on (pool_pages and base_ptr are per instance)
@@ -113,25 +85,22 @@ DTYPE_CODES = {"bfloat16": 1, "float16": 2, "float32": 3, "float8_e4m3fn": 4,
                "float8_e5m2": 5}
 
 
-# KernelReadPins (kernel argument contract): every slot and every array length k_launch hands to the kernels is <= K_LIM
-# (int32 page table / flashinfer indices; the Rust core's exec.rs K_LIM)
+# Kernel arguments must fit the int32 page table and FlashInfer index arrays.
 K_LIM = 0x7FFF_FFFF
-# KernelReadPins compatibility: table rows a generation can be bound to are 0 .. ROW_LIM - 1 (the Rust core's ROW_LIM)
+# Row IDs must fit the table-row range accepted by the ledger interface.
 ROW_LIM = 1 << 20
-# peer transfer identity range: peer xids are u64 in the Rust core (D issues them from a u64 counter)
+# Transfer IDs retain the unsigned 64-bit range of the ledger interface.
 XID_LIM = 1 << 64
 
-# compatibility (the contract): the instance role, set once at construction (None = unset: the behaviour of
-# compatibility).  Every role refusal raises LedgerViolation whose message contains ROLE_REFUSED
-# (the Rust layer's V_ROLE text), with the state unchanged.
+# Role checks run before argument filtering and leave the state unchanged on refusal.
 ROLES = (None, "P", "D")
 ROLE_REFUSED = "refused for this instance's role"
 
 
 def folds_negative(room: int) -> bool:
-    """The Rust core holds rooms as i64 (Python ints folded modulo 2^64, ledger contract):
-    True iff ``room`` folds to a negative i64 (for room in [-2^63, 2^64): room < 0 or
-    room >= 2^63).  On D such an open_req is a local request and refused."""
+    """Keep room validation compatible with signed 64-bit ledger rooms.
+
+    Python integers wrap modulo 2**64. Decode refuses values that become negative."""
     return (room & 0xFFFF_FFFF_FFFF_FFFF) >> 63 == 1
 
 
@@ -144,20 +113,14 @@ class LedgerViolation(RuntimeError):
     """An invariant broke or the glue misused the ledger.  Fatal: stop the process."""
 
 
-# ---------------------------------------------------------------------------------------------
-# the interface (PdLedger implements it; the frozen Rust archive predates p_cancel)
-# ---------------------------------------------------------------------------------------------
 
 
 class Ledger(Protocol):
-    # -- setup / peers ----------------------------------------------------------------------
-    # compatibility (the contract): constructor argument role=None|"P"|"D"; read-only here
     @property
     def role(self) -> str | None: ...
     def register_peer(self, peer: int, layout: List[int]) -> int: ...
     def peer_lost(self, peer: int) -> List[int]: ...
 
-    # -- request lifecycle (both sides) -----------------------------------------------------
     def open_req(self, room: int, *, prefix_tokens: List[int] | None = None) -> int: ...
     def hit(self, gen: int, page: int) -> None: ...
     def seal(self, gen: int) -> int: ...
@@ -169,20 +132,17 @@ class Ledger(Protocol):
     def token_slots(self, gen: int, lo: int, hi: int) -> List[int]: ...
     def release(self, gen: int) -> int: ...
 
-    # -- local GPU steps (ArchivedRustLedger inflight[k]) ------------------------------------------
     def launch(self, step: int, items: List[Tuple[int, int, int]]) -> None: ...
     def complete(self, step: int) -> None: ...
-    # KernelReadPins (lifecycle contract, KLaunch / KDone): launch plus the step's kernel arguments; step_done =
-    # complete.  The glue uses these two in PD mode (scheduler_pd.PDHooks).
+    # PD uses k_launch and step_done to bind kernel arguments to the checked lifetime.
     def k_launch(self, step: int, items: List[Tuple[int, int, int]],
                  npad: int = 0, rows: List[int] | None = None) -> Tuple[
                      bytearray, bytearray, bytearray, bytearray, bytearray]: ...
     def step_done(self, step: int) -> None: ...
-    # KernelReadPins compatibility: table row <-> generation binding (k_launch(rows=...) checks it; release unbinds)
+    # Row bindings prevent a recycled table row from launching another generation.
     def bind_row(self, row: int, gen: int) -> None: ...
     def row_gen(self, row: int) -> int: ...
 
-    # -- D side --------------------------------------------------------------------------------
     def d_expect(self, gen: int, peer: int, ntokens: int) -> int: ...
     def d_descriptor(self, xid: int) -> tuple: ...
     def d_landed(self, peer: int, room: int, gen: int, xid: int, ntokens: int) -> int: ...
@@ -191,7 +151,6 @@ class Ledger(Protocol):
     def d_unstopped(self, xid: int, reason: int) -> int: ...
     def d_xfer(self, xid: int) -> Tuple[int, int, int, int, int]: ...
 
-    # -- P side --------------------------------------------------------------------------------
     def p_post(self, gen: int, ntokens: int, peer: int, peer_room: int, peer_gen: int,
                peer_xid: int, dst_pages: List[int], *, dst_descriptor: tuple | None = None) -> int: ...
     def p_expose(self, gen: int, ntokens: int, peer: int, peer_room: int, peer_gen: int,
@@ -203,7 +162,6 @@ class Ledger(Protocol):
     def p_abort(self, peer: int, peer_xid: int) -> int: ...
     def p_entry(self, eid: int) -> Tuple[int, int, int, int, int]: ...
 
-    # -- reporting -----------------------------------------------------------------------------
     def free_pages(self) -> int: ...
     def stats(self) -> Dict[str, int]: ...
     def check(self) -> None: ...
@@ -223,11 +181,9 @@ def _le_i32(b) -> array.array:
 
 
 def page_addr(layout: List[int], kv: int, layer: int, page: int) -> int:
-    """Address of (kv, layer, page) in mini-sglang's KV buffer.
+    """Address a KV block in the contiguous MHAKVCache buffer.
 
-    ``MHAKVCache._kv_buffer`` is one contiguous tensor of shape
-    (2, num_layers, pool_pages, page_size, kv_heads, head_dim) (kvcache/mha_pool.py@9a91cfa).
-    """
+    The layout is (2, num_layers, pool_pages, page_size, kv_heads, head_dim)."""
     num_layers, page_size, kv_heads, head_dim, itemsize, pool_pages, base_ptr = layout[:7]
     page_bytes = page_size * kv_heads * head_dim * itemsize
     return base_ptr + ((kv * num_layers + layer) * pool_pages + page) * page_bytes
@@ -235,11 +191,9 @@ def page_addr(layout: List[int], kv: int, layer: int, page: int) -> int:
 
 def plan_copy(src_layout: List[int], src_pages: List[int], dst_layout: List[int],
               dst_pages: List[int]) -> Tuple[List[int], List[int], List[int]]:
-    """Address triples for copying src_pages[i] -> dst_pages[i] for every (K/V, layer).
+    """Merge page pairs contiguous at both ends to reduce transfer descriptors.
 
-    Runs of pages that are contiguous on both sides are merged into one block (the same idea as
-    SGLang's ``group_concurrent_contiguous``).
-    """
+    Return source address, destination address, and byte count for each KV layer."""
     if (len(src_layout) != len(LAYOUT_FIELDS) or len(dst_layout) != len(LAYOUT_FIELDS)
             or layout_key(src_layout) != layout_key(dst_layout)):
         raise LedgerViolation("TransferLayout: incompatible source/destination layout")
@@ -268,9 +222,6 @@ def plan_copy(src_layout: List[int], src_pages: List[int], dst_layout: List[int]
     return srcs, dsts, lens
 
 
-# ---------------------------------------------------------------------------------------------
-# implementation (PdLedger, current implementation)
-# ---------------------------------------------------------------------------------------------
 
 
 class _Req:
@@ -312,32 +263,22 @@ class _Entry:  # P side
 
 
 class PdLedger:
-    """The PD page ledger (``Ledger``), pure Python; the mainline implementation (the contract; it was
-    the Python reference ``RefLedger`` of compatibility, which stays as an alias).
+    """Serialize ledger operations so checks and state changes are atomic.
 
-    Thread-safe (one lock around every public method).  ``check_every`` controls the full
-    invariant scan: 1 = after every mutating call (tests), N = every N-th call, 0 = only when
-    ``check()`` is called explicitly (e.g. when the scheduler is idle).  Local precondition
-    checks on the touched pages run on every call regardless, and ``k_launch`` checks the
-    kernel arguments it returns (``_kargs_post``) on every call. QuarNoReg is likewise
-    always checked before quarantining a page. PrefixSharing NoEvictUnderRDMA and
-    PrefcMatchesHolders run on every touched Shared page; check_every disables none of them.
+    check_every controls full invariant scans: 1 scans every mutation, N scans
+    every Nth call, and 0 scans only through check(). Local preconditions and
+    k_launch postconditions always run. QuarNoReg runs before quarantine;
+    NoEvictUnderRDMA and PrefcMatchesHolders run on each touched shared page.
 
-    ``role`` (compatibility, the contract; ledger contract): None (unset, compatibility unchanged), "P" or
-    "D", set once here and read-only (``role``).  p_cancel is P-only (the contract).
-    Other refusals, in the same order, match the frozen Rust
-    core and its PyO3 layer (each raises LedgerViolation containing ``ROLE_REFUSED``, before any
-    argument pre-filter, state unchanged).  D: ``open_req`` of a room that folds to a negative
-    i64; ``alloc`` while the gen's incoming transfer is exposed but not VISIBLE (before the
-    capacity check); a ``launch`` / ``k_launch`` row with no incoming transfer; ``d_expect``
-    exposing fewer than all of the gen's pages; ``p_post``, ``p_begin``, ``p_done``, ``p_abort``.
-    P: ``d_expect``, ``d_landed``, ``d_stopped``, ``d_unstopped``, ``d_mark_visible``.
-    """
+    role is fixed at construction. None keeps the unrestricted interface;
+    "P" and "D" reject calls belonging to the other side before filtering
+    arguments or changing state. Decode also rejects local rooms, partial
+    exposure, launches without an incoming transfer, and page growth while
+    an exposed transfer is not yet VISIBLE."""
 
     def __init__(self, num_pages: int, layout: List[int], instance: int,
                  check_every: int = 0, role: str | None = None) -> None:
-        # the role first, before the layout (as RustLedger.__new__; a non-str role is a
-        # TypeError there, from PyO3's argument conversion)
+        # Validate the role first to preserve the interface error order.
         if role is not None and not isinstance(role, str):
             raise TypeError(f"argument 'role': {type(role).__name__} object is not None or a str")
         if role not in ROLES:
@@ -346,8 +287,7 @@ class PdLedger:
         if len(layout) != len(LAYOUT_FIELDS):
             raise LedgerViolation(f"layout needs {LAYOUT_FIELDS}")
         if num_pages <= 0 or num_pages > layout[5] - 1:
-            # Z3 finding dummy-page isolation: the last pool page is mini-sglang's dummy page (CUDA-graph padding
-            # writes it; p_post refuses it as a destination), so the ledger never owns it
+            # Reserve the last pool page for CUDA-graph padding; the ledger must never own it.
             raise LedgerViolation("num_pages must be in 1..pool_pages - 1 (last page = dummy)")
         self.num_pages = num_pages
         self.page_size = layout[1]
@@ -356,12 +296,10 @@ class PdLedger:
         self.check_every = check_every
         self._ncalls = 0
         self._lock = threading.RLock()
-        # pages.  pst / pown / pix are flat machine arrays (array.array, indexed like lists) so
-        # that the k_launch postconditions can read them as numpy views without a copy
+        # Flat machine arrays let launch postconditions use NumPy views without copying.
         self.pst = array.array("b", [FREE]) * num_pages
         self.pown = array.array("q", [0]) * num_pages  # gen
-        # pix[p]: index of page p in its owner's page list, written once by alloc (the Rust
-        # core's pix, ledger contract; invariant i_pix in _check); read only by _kargs_post
+        # Keep each page index independently of request page lists for launch postconditions.
         self.pix = array.array("q", [0]) * num_pages
         self.pops: List[Set[Tuple[int, int]]] = [set() for _ in range(num_pages)]  # in-flight
         self.pqr = [0] * num_pages  # quarantine reason
@@ -372,7 +310,7 @@ class PdLedger:
         self.skey: Dict[int, tuple] = {}
         self.prefc: Dict[int, int] = {}
         self.holders: Dict[int, Set[Tuple[str, int]]] = {}
-        self.rshared: Dict[int, int] = {}  # request -> canonical page, independent of r.pages
+        self.rshared: Dict[int, int] = {}  # Canonical prefix pages are tracked independently of r.pages.
         self.prefix_steps: Dict[int, List[Tuple[int, int]]] = {}  # physical pin snapshots
         self.shared_quarantine: Set[Tuple[int, int]] = set()  # permanent (eid, page) holders
         self.prefix_reqs: Set[int] = set()
@@ -385,12 +323,12 @@ class PdLedger:
         self.xfers: Dict[int, _Xfer] = {}
         self.next_xid = 1
         self.entries: Dict[int, _Entry] = {}
-        self.entry_by_key: Dict[Tuple[int, int], int] = {}  # (peer, peer_xid) -> eid
+        self.entry_by_key: Dict[Tuple[int, int], int] = {}  # Index outgoing entries by peer instance and transfer ID.
         self.next_eid = 1
         self.used_peer_xids: Set[Tuple[int, int]] = set()  # (peer, peer_xid) posted or tombstoned
         self.peers: Dict[int, List[int]] = {}
         self.lost_peers: Set[int] = set()
-        # KernelReadPins compatibility: table row <-> live generation, one to one; only bind_row and release change it
+        # Bindings remain one-to-one until release, even if a transfer fails.
         self.gen_of_row: Dict[int, int] = {}
         self.row_of_gen: Dict[int, int] = {}
         self.counters: Dict[str, int] = {
@@ -407,22 +345,19 @@ class PdLedger:
 
     @property
     def role(self) -> str | None:
-        """The instance role (compatibility, the contract): None (unset), "P" or "D"; fixed at construction."""
+        """The role is fixed at construction so callers cannot bypass role checks."""
         return self._role
 
-    # ----------------------------------------------------------------------- helpers
     def _fail(self, msg: str) -> None:
         raise LedgerViolation(f"[ledger inst={self.instance}] {msg}")
 
-    # PdCore[05e988a5] IsP / IsD instance separation (no action).
+    # PdCore IsP / IsD instance separation (no action).
     def _refuse(self, what: str, why: str) -> None:
-        """A role refusal (compatibility): LedgerViolation with the Rust layer's text; called before
-        any state change."""
+        """Refuse a role mismatch before any state change."""
         self._fail(f"{what}: {ROLE_REFUSED} (role {self._role}: {why})")
 
     def _refuse_on(self, role: str, what: str) -> None:
-        """The other side's method: refused first, before any argument check or pre-filter
-        (the PyO3 layer's refuse_on)."""
+        """Check the role before malformed arguments can hide a role refusal."""
         if self._role == role:
             self._refuse(what, f"{what} is a {'D' if role == 'P' else 'P'} method")
 
@@ -439,16 +374,15 @@ class PdLedger:
             self._check()
 
     def _kpin(self, p: int) -> bool:
-        # PdCore[05e988a5] KLaunch:1259 / KDone:1297. Rust local.rs kpin:
-        # latest launch covers every older launch because pages only grow while LIVE.
-        # PdCore[05e988a5] SPin:361. Shared has pown=0; DUP is no longer in r.pages.
+        # The latest launch covers older launches because live requests only grow.
+        # Shared pages have no private owner; remapped DUP pages may be absent from r.pages.
         if self.pst[p] in (SHARED, DUP):
             return any(q == p for pins in self.prefix_steps.values() for _, q in pins)
         r = self.reqs.get(self.pown[p])
         return r is not None and r.rls > self.done and self.pix[p] < r.rlp
 
     def _try_free(self, p: int) -> bool:
-        """DRAINING page with no in-flight access left -> FREE (stopped evidence = empty set)."""
+        """An empty in-flight set is the evidence needed to reclaim a draining page."""
         if self.pst[p] in (DRAINING, DUP) and not self.pops[p] and not self._kpin(p):
             self.pst[p] = FREE
             self.pown[p] = 0
@@ -456,8 +390,7 @@ class PdLedger:
             return True
         return False
 
-    # PdCore[05e988a5] QuarNoReg:1598, DrainTimeout:976-983. Like launch checks, always enabled;
-    # check_every controls only the redundant full scan, not this transition check.
+    # QuarNoReg must hold at this transition even when full invariant scans are disabled.
     def _quar_no_reg(self, p: int) -> None:
         for kind, eid in self.pops[p]:
             e = self.entries.get(eid) if kind == 2 else None
@@ -499,8 +432,7 @@ class PdLedger:
                 touched.append(p)
         return touched
 
-    # ----------------------------------------------------------------------- setup / peers
-    # PdCore[05e988a5] environment peer/layout agreement (no standalone action).
+    # PdCore environment peer/layout agreement (no standalone action).
     def register_peer(self, peer: int, layout: List[int]) -> int:
         with self._lock:
             if peer in self.lost_peers or peer == self.instance:
@@ -514,15 +446,13 @@ class PdLedger:
             self._after()
             return OK
 
-    # PdCore[05e988a5] DRecvNotice:926 (not ok) / DTimeout:885 / DrainTimeout:976; PCancelReg:1177.
+    # PdCore DRecvNotice (not ok) / DTimeout / DrainTimeout; PCancelReg.
     def peer_lost(self, peer: int) -> List[int]:
-        """The peer instance is gone (connection closed, heartbeat timeout).
+        """Peer loss does not prove that submitted transfers have stopped.
 
-        D side: every transfer from it that is not yet landed or stopped is quarantined
-        (no stopped evidence; lifecycle contract step-1 rule).  P side: entries not yet handed to the
-        transfer engine are cancelled (never started = stopped); submitted ones keep their
-        pages until the engine call returns (``p_done``).  Returns the affected xids / eids.
-        """
+        Quarantine unresolved incoming transfers. Cancel outgoing registrations
+        that never reached the engine; submitted entries keep their source holds
+        until p_done reports the result. Return affected transfer or entry IDs."""
         with self._lock:
             self.lost_peers.add(peer)
             self.peers.pop(peer, None)
@@ -538,13 +468,12 @@ class PdLedger:
             self._after()
             return out
 
-    # ----------------------------------------------------------------------- requests
-    # PdCore[05e988a5] PRecvReq:517 / DRecvReq:678 (with alloc + d_expect).
+    # PdCore PRecvReq / DRecvReq (with alloc + d_expect).
     def open_req(self, room: int, *, prefix_tokens: List[int] | None = None) -> int:
         with self._lock:
             if self._role == "D" and folds_negative(room):  # D opens only PD requests (decode handoff admission)
                 self._refuse("open_req", f"room {room} is a local request (negative as i64)")
-            # PdCore[05e988a5] PRecvReq:517 / PAllocPrefix:1326 / PNoPrefix:1322.
+            # PdCore PRecvReq / PAllocPrefix / PNoPrefix.
             key = None
             if prefix_tokens is not None:
                 self._refuse_on("D", "open_req(prefix_tokens)")
@@ -559,10 +488,10 @@ class PdLedger:
             self._after()
             return gen
 
-    # PdCore[05e988a5] PRecvReq:517 / DRecvReq:678; DGrow:1206 after D visibility (run / ovl).
+    # PdCore PRecvReq / DRecvReq; DGrow after D visibility (run / ovl).
     # Before D exposure alloc is the DRecvReq allocation half; Q = got (one action).
     def alloc(self, gen: int, npages: int) -> List[int]:
-        """FREE -> PRIVATE(gen).  All or nothing: returns [] if fewer than npages are free."""
+        """Allocate all requested pages or return an empty list without changing ownership."""
         with self._lock:
             r = self._req(gen)
             if npages < 0:
@@ -586,19 +515,18 @@ class PdLedger:
             self._after()
             return list(got)
 
-    # PdCore[05e988a5] observation of pg (no action).
+    # PdCore observation of pg (no action).
     def pages_of(self, gen: int) -> List[int]:
         with self._lock:
             return list(self._req(gen, (R_LIVE, R_FAILED, R_RELEASED)).pages)
 
-    # PdCore[05e988a5] observation of page state (no action).
+    # PdCore observation of page state (no action).
     def page_states(self, pages: List[int]) -> List[int]:
-        """Read-only: the state of each page (optional query used by the trace lines, compatibility;
-        not part of the ``Ledger`` interface the Rust core must implement)."""
+        """Return page states for trace observations without exposing mutable state."""
         with self._lock:
             return [self.pst[p] for p in pages]
 
-    # PdCore[05e988a5] KEnt:1246 (page/token addressing; no standalone action).
+    # PdCore KEnt (page/token addressing; no standalone action).
     def token_slots(self, gen: int, lo: int, hi: int) -> List[int]:
         """KV slot index (page * page_size + offset) of token positions [lo, hi) of ``gen``:
         the page-table entries the glue writes.  Computed here so that the glue never builds
@@ -610,11 +538,12 @@ class PdLedger:
                 self._fail(f"token_slots({gen}, {lo}, {hi}) outside {len(r.pages)} pages")
             return [r.pages[t // ps] * ps + t % ps for t in range(lo, hi)]
 
-    # PdCore[05e988a5] PRelease:1086 / DFinish:809 / DFinishOvl:844 / DEnd:862; GTo:463 for grown pages.
+    # PdCore PRelease / DFinish / DFinishOvl / DEnd; GTo for grown pages.
     def release(self, gen: int) -> int:
-        """The owner is finished or aborted.  Pages with no in-flight access -> FREE now;
-        others -> DRAINING until the access completes with stopped evidence.  Quarantined pages
-        stay quarantined.  Returns the number of pages freed now."""
+        """Release ownership while retaining pages that may still be accessed.
+
+        Unpinned pages become FREE; the rest drain until completion evidence
+        arrives. Quarantined pages remain quarantined. Return pages freed now."""
         with self._lock:
             r = self._req(gen, (R_LIVE, R_FAILED))
             r.state = R_RELEASED
@@ -636,12 +565,11 @@ class PdLedger:
             self._after()
             return freed
 
-    # ----------------------------------------------------------------------- PrefixSharing prefix page
     def prefix_guard(self):
-        """Scheduler tree + ledger transaction (Python PrefixSharing extension).
-        The traced wrapper acquires the trace lock first, then this reentrant lock.
-        Worker completion can never interleave a tree edit with its ledger transition.
-        """
+        """Keep radix edits atomic with their ledger transitions.
+
+        The traced wrapper takes the trace lock before this reentrant lock,
+        preventing worker completion from interleaving with a tree edit."""
         return self._lock
 
     def _trace_entry_snapshot(self, eid: int) -> dict:
@@ -666,13 +594,13 @@ class PdLedger:
                     for p in sorted(self.skey)]
 
     def shared_refs(self) -> Dict[int, int]:
-        # PdCore[05e988a5] PrefcMatchesHolders:1612 (observation, no action).
+        # PdCore PrefcMatchesHolders (observation, no action).
         with self._lock:
             for p in self.skey:
                 self._shared_check(p)
             return dict(self.prefc)
 
-    # PdCore[05e988a5] PrefcMatchesHolders:1612 / SFollow:1384. Count deltas are
+    # PdCore PrefcMatchesHolders / SFollow. Count deltas are
     # independent of the holder sets, never assigned from len(holders).
     def _ref(self, p: int, holder: Tuple[str, int]) -> None:
         if holder in self.holders[p]:
@@ -686,7 +614,7 @@ class PdLedger:
         self.holders[p].remove(holder)
         self.prefc[p] -= 1
 
-    # PdCore[05e988a5] NoEvictUnderRDMA:1615. Entry identity comes from the POST snapshot,
+    # PdCore NoEvictUnderRDMA. Entry identity comes from the POST snapshot,
     # including permanently failed transfers; no current request map is consulted.
     def _no_evict_under_rdma(self, p: int) -> None:
         for e in self.entries.values():
@@ -737,7 +665,7 @@ class PdLedger:
             self._fail("HitIdentity: page is not Shared with the request's complete token identity")
         self._shared_check(p)
 
-    # PdCore[05e988a5] PHit:1314. Hit happens before alloc/launch, and holds exactly one
+    # PdCore PHit. Hit happens before alloc/launch, and holds exactly one
     # canonical full prefix page. Identity is the token tuple, not a collision-prone hash.
     def hit(self, gen: int, page: int) -> None:
         with self._lock:
@@ -768,7 +696,7 @@ class PdLedger:
                 self._fail("SealOnlyLanded: prefix page still has an in-flight writer")
         return r, p
 
-    # PdCore[05e988a5] PSeal:1344. Only complete KV with no pending writer can be sealed;
+    # PdCore PSeal. Only complete KV with no pending writer can be sealed;
     # read-only pins may remain and keep the generation's reference until KDone.
     def seal(self, gen: int) -> int:
         with self._lock:
@@ -784,7 +712,7 @@ class PdLedger:
             self._after()
             return p
 
-    # PdCore[05e988a5] PDedup:1352. Remap BEFORE freeing the duplicate; actual in-flight
+    # PdCore PDedup. Remap BEFORE freeing the duplicate; actual in-flight
     # physical prefix pages are stored in prefix_steps and are never rewritten by dedup.
     def dedup(self, gen: int, page: int) -> int:
         with self._lock:
@@ -801,7 +729,7 @@ class PdLedger:
             self._after()
             return old
 
-    # PdCore[05e988a5] SFollow:1384 (RemainingRequestHolders): release keeps the exact request holder until
+    # PdCore SFollow (RemainingRequestHolders): release keeps the exact request holder until
     # its LAST local read pin ends, independently of other requests or outgoing entries.
     def _release_shared(self, gen: int) -> None:
         p = self.rshared.get(gen)
@@ -811,7 +739,7 @@ class PdLedger:
         if p is not None:
             self._shared_check(p)
 
-    # PdCore[05e988a5] SEvict:1364. Guard is Shared AND refcount=0; NoEvictUnderRDMA is
+    # PdCore SEvict. Guard is Shared AND refcount=0; NoEvictUnderRDMA is
     # a checked consequence of holder accounting, never an extra RDMA eviction guard.
     def evict(self, page: int) -> None:
         with self._lock:
@@ -834,7 +762,7 @@ class PdLedger:
         self.free.append(p)
         self.counters["evicted"] += 1
 
-    # PdCore[05e988a5] FlushAll:1369 (cache reset, NOT D's visibility flush).
+    # PdCore FlushAll (cache reset, NOT D's visibility flush).
     def flush_shared(self) -> int:
         with self._lock:
             self._refuse_on("D", "flush_shared")
@@ -846,8 +774,7 @@ class PdLedger:
             self._after()
             return len(pages)
 
-    # ----------------------------------------------------------------------- local steps
-    # PdCore[05e988a5] KLaunch:1259 / KRowOK:1226.
+    # PdCore KLaunch / KRowOK.
     def launch(self, step: int, items: List[Tuple[int, int, int]]) -> None:
         """Local GPU step ``step`` (must be the next one) is about to be issued.
 
@@ -863,9 +790,10 @@ class PdLedger:
             self._after()
 
     def _launch_check(self, step: int, items: List[Tuple[int, int, int]]) -> List[int]:
-        """PdCore[05e988a5] KRowOK:1226. No state change; one page-count snapshot per row.
-        LIVE generations own PRIVATE pages (checked by _check / ReadOwnership / WriteOwnership); like the frozen
-        Rust launch_check, the hot precheck is O(rows), without revisiting every page."""
+        """Check KRowOK before mutation, with one page-count snapshot per row.
+
+        ReadOwnership, WriteOwnership, and full scans check individual pages;
+        this precheck stays proportional to the number of rows."""
         if step != self.step + 1:
             self._fail(f"launch step {step} after {self.step}")
         pages: List[int] = []
@@ -896,19 +824,19 @@ class PdLedger:
                         self._fail("SharedImmutable: launch writes a Shared prefix")
                 elif (self.pst[r.pages[0]] != PRIVATE or self.pown[r.pages[0]] != gen):
                     self._fail("SMapIntegrity: prefix is neither owned Private nor held Shared")
-            # KEnt:1246 + KGEnt:1253: pin ALL pages, including unwritten grown pages.
+            # KEnt + KGEnt: pin ALL pages, including unwritten grown pages.
             pages.append(len(r.pages))
         return pages
 
     def _launch_apply(self, step: int, items: List[Tuple[int, int, int]],
                       pages: List[int]) -> None:
-        # PdCore[05e988a5] KLaunch:1259; pin by incarnation, not one set insertion per page.
+        # PdCore KLaunch; pin by incarnation, not one set insertion per page.
         for (gen, rd, wr), count in zip(items, pages):
             r = self.reqs[gen]
-            # KLaunch:1265-1269 writes W; StreamFIFO: later steps read on the same FIFO stream.
+            # KLaunch writes W; StreamFIFO: later steps read on the same FIFO stream.
             r.launched = max(r.launched, wr)
             r.rls, r.rlp = step, count
-        # PdCore[05e988a5] KLaunch:1259. Freeze physical prefix identity for later dedup.
+        # PdCore KLaunch. Freeze physical prefix identity for later dedup.
         if self.prefix_reqs:
             pins = [(g, self.reqs[g].pages[0]) for g, _, _ in items if g in self.prefix_reqs]
             if pins:
@@ -916,11 +844,12 @@ class PdLedger:
         self.steps[step] = (list(items), pages)
         self.step = step
 
-    # PdCore[05e988a5] KRowOK:1226 (row r binds an incarnation; no standalone action).
+    # PdCore KRowOK (row r binds an incarnation; no standalone action).
     def bind_row(self, row: int, gen: int) -> None:
-        """Bind page-table row ``row`` to the live ``gen`` until ``gen`` is released (KernelReadPins compatibility,
-        the Rust core's ``bind_row``).  Refused (LedgerViolation, state unchanged) when gen is
-        not live, row is outside 0 .. ROW_LIM - 1, or the row or the gen is already bound."""
+        """Keep a table row bound to one live generation until release.
+
+        Reject an invalid row, a non-live generation, or an existing binding
+        with LedgerViolation and no state change."""
         with self._lock:
             r = self.reqs.get(gen)
             if r is None or r.state != R_LIVE:
@@ -935,32 +864,26 @@ class PdLedger:
             self.row_of_gen[gen] = row
             self._after()
 
-    # PdCore[05e988a5] observation of row incarnation (no action).
+    # PdCore observation of row incarnation (no action).
     def row_gen(self, row: int) -> int:
         """The gen bound to table row ``row`` (0 = none)."""
         with self._lock:
             return self.gen_of_row.get(row, 0)
 
-    # PdCore[05e988a5] KLaunch:1259 / KRowOK:1226 / KEnt:1246.
+    # PdCore KLaunch / KRowOK / KEnt.
     def k_launch(self, step: int, items: List[Tuple[int, int, int]], npad: int = 0,
                  rows: List[int] | None = None) -> Tuple[bytearray, bytearray, bytearray,
                                                          bytearray, bytearray]:
-        """KLaunch (KernelReadPins, kernel argument contract): ``launch`` (same checks, same in-flight record) plus the
-        kernel arguments of the step, computed from the ledger's own page lists.
+        """Build kernel arguments from the same page lists checked by launch.
 
-        items as for ``launch``, in batch order; ``npad`` = CUDA-graph padding rows after them.
-        Returns (indptr, qo_indptr, indices, out_loc, last_page_len), each a bytearray of
-        little-endian int32, lengths B+npad+1, B+npad+1, indptr[-1], qo_indptr[-1], B+npad
-        (flashinfer page_size 1): token t of row j reads KV slot indices[indptr[j] + t]
-        (t < write_upto); the step writes token t in [read_upto, write_upto) into
-        out_loc[qo_indptr[j] + t - read_upto]; last_page_len is all 1; a padding row reads
-        and writes the dummy slot num_pages * page_size (outside every ledger page, Z3 dummy-page isolation).
-        Same semantics as the Rust core's ``PdLedger::k_launch`` (ensures ``kargs_ok``);
-        any refusal raises ``LedgerViolation`` with the state unchanged.
+        items follow launch's batch order; npad adds CUDA-graph padding rows.
+        Return indptr, qo_indptr, indices, out_loc, and last_page_len as
+        little-endian int32 bytearrays. The pointer arrays delimit each row's
+        read and write slots. last_page_len contains ones for FlashInfer's
+        single-token pages. Padding uses only the reserved dummy slot.
 
-        ``rows`` (KernelReadPins compatibility, ``k_launch_rows``): the page-table row of each item, same order;
-        refused unless every item's gen is the one bound to its row (``bind_row``).  Padding
-        rows have no entry.  ``None`` = no row check (the compatibility behaviour)."""
+        When rows is supplied, each generation must match its table binding.
+        None skips that check. Any refusal leaves the ledger unchanged."""
         with self._lock:
             if not isinstance(npad, int) or npad < 0:
                 self._fail(f"k_launch step {step}: bad npad {npad}")
@@ -973,8 +896,7 @@ class PdLedger:
                                    f"to gen {self.gen_of_row.get(w, 0)}, the item is gen {gen}")
             pages = self._launch_check(step, items)
             arrays = self._kargs(step, items, npad)  # pure; may refuse (K_LIM) before any change
-            # launch postconditions: the result checked against the pre-launch state (kargs_ok / k_read_ok of
-            # the frozen Rust core), still before any change: a failure leaves the state as it was
+            # Check the generated arrays against the pre-launch state so failure leaves it unchanged.
             self._kargs_post(step, items, npad, rows, arrays)
             self._launch_apply(step, items, pages)
             self._after()
@@ -1040,32 +962,20 @@ class PdLedger:
 
     def _kargs_post(self, step: int, items: List[Tuple[int, int, int]], npad: int,
                     rows: List[int] | None, arrays) -> None:
-        """Runtime postconditions of ``k_launch`` (launch postconditions): what Verus proved for the frozen
-        Rust core's ``PdLedger::k_launch`` (ensures ``kargs_ok`` and ``k_read_ok``,
-        ledger contract), checked on the five arrays ``_kargs`` returned against the
-        state before the launch is applied.  Any failure raises ``LedgerViolation`` naming the
-        check (``postcondition <launch-check name>``); the state is unchanged.
+        """Validate generated arguments independently before applying the launch.
 
-        Independent of ``_kargs``: a slot's owner comes from the page arrays pst / pown / pix
-        (page -> state, owner gen, index in the owner's page list), not from the page list
-        ``_kargs`` reads, and the owner row j must have is the gen bound to its table row
-        (``rows``; the item's gen when no rows are given).  B = len(items), ps = page_size:
-          ArrayShapes shapes: B + npad + 1 indptr and qo_indptr entries, B + npad last_page_len,
-              indptr[-1] indices, qo_indptr[-1] out_loc;
-          TokenOffsets indptr and qo_indptr start at 0; row j reads wr_j tokens and writes wr_j - rd_j
-              (a padding row: 1 and 1); last_page_len is all 1;
-          GenerationVisibility row j's owner gen is the item's gen and LIVE, its incoming transfer (if any) is
-              VISIBLE (landed and made visible), on D it has one, it reads only tokens in place
-              (rd_j <= max(written, launched); [rd_j, wr_j) are written by this step itself)
-              and wr_j fits its pages;
-          ReadOwnership every read slot indices[indptr[j] + t], t < wr_j, is token t of the owner gen: its
-              page is in the pool, PRIVATE, owned by that gen, at index t // ps of the gen's
-              page list, and the slot's offset in the page is t % ps;
-          WriteOwnership every write slot out_loc[qo_indptr[j] + u], u < wr_j - rd_j, is token rd_j + u of
-              the owner gen (the ReadOwnership test): the step stores only into the row's own Private page;
-          PaddingIsolation a padding row reads and writes only the dummy slot num_pages * ps (outside every
-              ledger page).
-        PdCore[05e988a5] KRowOK:1226 (GenerationVisibility), KEnt:1246 (ReadOwnership / WriteOwnership: the pages of the read set)."""
+        _kargs reads request page lists. These checks instead use page state,
+        owner, and index arrays, plus table-row bindings when supplied, so a
+        bad argument builder cannot validate its own output.
+
+        ArrayShapes and TokenOffsets check every array length and row range.
+        GenerationVisibility requires a live owner, visible incoming KV, and
+        reads covered by completed or earlier stream-ordered writes.
+        ReadOwnership and WriteOwnership check each slot's owner, page index,
+        and offset. PaddingIsolation confines padding to the dummy slot.
+        Shared-prefix reads are checked separately; writes require PRIVATE pages.
+
+        A failure names the postcondition in LedgerViolation and changes no state."""
         ps = self.page_size
         nb, nr = len(items), len(items) + npad
         def bad(what: str) -> None:
@@ -1134,7 +1044,7 @@ class PdLedger:
                 bad(f"PaddingIsolation: a padding row {name}s slot "
                     f"{next(s for s in pad if s != dummy)}, not the dummy slot {dummy}")
 
-    # PdCore[05e988a5] KEnt:1246 / SharedImmutable:1621 / HitIdentity:1622.
+    # PdCore KEnt / SharedImmutable / HitIdentity.
     # PrefixSharing reads accept held Shared only at logical page zero. Writes still use WriteOwnership's
     # independent PRIVATE owner/index check. KernelReadPins keeps the original vectorized path.
     def _slots_shared(self, buf, ptr, nb, tok0, owners):
@@ -1204,10 +1114,10 @@ class PdLedger:
         return None
 
     def _slots_paged_np(self, ss, tok0, owners, pst, pown, pix) -> bool:
-        """Full ReadOwnership/WriteOwnership for equal-shaped rows: check EVERY slot's continuity within its
-        logical page, then each page anchor's state/owner/index/offset. This is not sampling:
-        continuity makes all slots in a block belong to its checked anchor page. Head/tail
-        partial pages and write ranges starting mid-page are checked by the same rule."""
+        """Continuity makes every slot belong to its checked page anchor.
+
+        Check every slot, including partial head and tail pages. Validating the
+        anchor alone would miss a bad slot inside an otherwise valid page."""
         np, ps = _np, self.page_size
         nb, count = ss.shape
         start = tok0[0] % ps
@@ -1245,13 +1155,12 @@ class PdLedger:
                     return pos, s
         return None
 
-    # PdCore[05e988a5] KDone:1297; P final prefill also PPoll:539.
+    # PdCore KDone; P final prefill also PPoll.
     def step_done(self, step: int) -> None:
-        """KDone (KernelReadPins): step ``step``'s completion evidence (call after its copy-done event
-        synchronized; stream completion).  Same as ``complete``."""
+        """Record KDone only after the step's copy-done event has synchronized."""
         self.complete(step)
 
-    # PdCore[05e988a5] KDone:1297; P final prefill also PPoll:539.
+    # PdCore KDone; P final prefill also PPoll.
     def complete(self, step: int) -> None:
         """Local GPU step ``step`` finished (its event was synchronized).  Steps complete in
         order.  Pages whose last in-flight access was this step and whose owner released them
@@ -1265,7 +1174,7 @@ class PdLedger:
                 if r is not None:
                     r.written = max(r.written, wr)
             self.done = step  # ordered completion: all pins <= done have stopped
-            # PdCore[05e988a5] KDone:1297 / SFollow:1384. A remapped DUP may be absent
+            # PdCore KDone / SFollow. A remapped DUP may be absent
             # from every current request map; reclaim it via the physical pin snapshot.
             for _gen, p in self.prefix_steps.pop(step, ()):
                 if self.pst[p] == DUP:
@@ -1281,8 +1190,7 @@ class PdLedger:
                     self._gc_req(gen)
             self._after()
 
-    # ----------------------------------------------------------------------- D side
-    # PdCore[05e988a5] DRecvReq:678 (expose half).
+    # PdCore DRecvReq (expose half).
     def d_expect(self, gen: int, peer: int, ntokens: int) -> int:
         """Expose the first ceil(ntokens / page_size) pages of ``gen`` to P instance ``peer``
         for RDMA WRITE.  From now on the pages count as written-to by a remote writer until
@@ -1314,8 +1222,7 @@ class PdLedger:
             self._after()
             return xid
 
-    # the contract obligation (2), outside the aggregate-D model. Logical order is checked
-    # against independent private pix / owner metadata, NOT numerical page-ID order.
+    # Validate logical destination order from independent owner and page-index metadata.
     def _page_sequence(self, gen: int, pages, *, shared: bool) -> None:
         if len(set(pages)) != len(pages):
             self._fail("TransferPages: duplicate page")
@@ -1327,7 +1234,7 @@ class PdLedger:
             elif self.pst[p] != PRIVATE or self.pown[p] != gen or self.pix[p] != i:
                 self._fail("TransferPages: wrong owner, state or logical page order")
 
-    # PdCore[05e988a5] DRecvReq:678 (exposure observation); ordered destination
+    # PdCore DRecvReq (exposure observation); ordered destination
     # descriptor is an implementation obligation beyond the model's aggregate xdst.
     def d_descriptor(self, xid: int) -> tuple:
         """Immutable (instance, room, gen, xid, ntokens, layout, ordered pages).
@@ -1343,7 +1250,7 @@ class PdLedger:
                 self._fail("TransferPages: D descriptor must expose the complete ordered row")
             return (self.instance, x.room, x.gen, xid, x.ntokens, tuple(self.layout), tuple(x.pages))
 
-    # PdCore[05e988a5] DRecvNotice:926 / DRecvNopost:950 identity guards.
+    # PdCore DRecvNotice / DRecvNopost identity guards.
     def _check_msg(self, peer: int, room: int, gen: int, xid: int) -> Tuple[int, _Xfer | None]:
         x = self.xfers.get(xid)
         if x is None:
@@ -1352,14 +1259,14 @@ class PdLedger:
             return DROP_MISMATCH, None
         return OK, x
 
-    # PdCore[05e988a5] DRecvNotice:926 / DRecvNopost:950 (stop evidence).
+    # PdCore DRecvNotice / DRecvNopost (stop evidence).
     def _stop_xfer(self, xid: int, x: _Xfer, state: int) -> None:
         x.state = state
         for p in self._remove_op((1, xid), x.pages):
             self._try_free(p)
         self._gc_req(x.gen)
 
-    # PdCore[05e988a5] DRecvNotice:926 (not ok) / DTimeout:885 / DrainTimeout:976.
+    # PdCore DRecvNotice (not ok) / DTimeout / DrainTimeout.
     def _quarantine_xfer(self, xid: int, x: _Xfer, reason: int) -> None:
         x.state = X_QUARANTINED
         self.counters["xfers_quarantined"] += 1
@@ -1371,7 +1278,7 @@ class PdLedger:
         if r is not None and r.state == R_LIVE:
             r.state = R_FAILED  # the glue must fail and release this request
 
-    # PdCore[05e988a5] DRecvNotice:926 (ok) / DBadLen:1121.
+    # PdCore DRecvNotice (ok) / DBadLen.
     def d_landed(self, peer: int, room: int, gen: int, xid: int, ntokens: int) -> int:
         """P's notice: all RDMA writes of ``xid`` completed locally at P (sent only after the
         engine returned success).  This is the stopped evidence for the transfer.  If the owner
@@ -1402,9 +1309,9 @@ class PdLedger:
             self._after()
             return OK
 
-    # PdCore[05e988a5] DLanded:737 (DStartRun:730 flush precondition).
+    # PdCore DLanded (DStartRun flush precondition).
     def d_mark_visible(self, xid: int) -> None:
-        """The glue made the landed writes visible to the GPU (the contract: the D glue calls
+        """The glue made the landed writes visible to the GPU (the D glue calls
         cudaDeviceFlushGPUDirectRDMAWrites before d_landed, on by default); the consumer may
         now read the pages (``launch`` checks this)."""
         with self._lock:
@@ -1415,7 +1322,7 @@ class PdLedger:
             x.state = X_VISIBLE
             self._after()
 
-    # PdCore[05e988a5] DRecvNopost:950 / DXferFailed:744.
+    # PdCore DRecvNopost / DXferFailed.
     def d_stopped(self, peer: int, room: int, gen: int, xid: int) -> int:
         """P certifies that no write of ``xid`` will happen or continue (its entry was never
         handed to the engine, or every engine call for it returned success).  The transfer's
@@ -1435,7 +1342,7 @@ class PdLedger:
             self._after()
             return OK
 
-    # PdCore[05e988a5] DRecvNotice:926 (not ok) / DTimeout:885 / DrainTimeout:976.
+    # PdCore DRecvNotice (not ok) / DTimeout / DrainTimeout.
     def d_unstopped(self, xid: int, reason: int) -> int:
         """No stopped evidence can be obtained (timeout, P reported a failed write, abort not
         acknowledged): the exposed pages become QUARANTINED for the process lifetime."""
@@ -1455,7 +1362,7 @@ class PdLedger:
             self._after()
             return OK
 
-    # PdCore[05e988a5] observation of incoming transfer (no action).
+    # PdCore observation of incoming transfer (no action).
     def d_xfer(self, xid: int) -> Tuple[int, int, int, int, int]:
         """(state, gen, room, peer, ntokens) of a D-side transfer; state 0 if unknown."""
         with self._lock:
@@ -1464,8 +1371,7 @@ class PdLedger:
                 return (0, 0, 0, 0, 0)
             return (x.state, x.gen, x.room, x.peer, x.ntokens)
 
-    # ----------------------------------------------------------------------- P side
-    # PdCore[05e988a5] PPost:556 (PReg).
+    # PdCore PPost (PReg).
     def p_post(self, gen: int, ntokens: int, peer: int, peer_room: int, peer_gen: int,
                peer_xid: int, dst_pages: List[int], *, dst_descriptor: tuple | None = None) -> int:
         """Register an outgoing transfer of the first ntokens tokens of local request ``gen``
@@ -1491,11 +1397,11 @@ class PdLedger:
             if r.rls > self.done and r.rlp > 0:
                 return REJ_SRC
             peer_layout = self.peers[peer]
-            # PdCore[05e988a5] PPost:556 / SFollow:1384: insert BEFORE post.
+            # PdCore PPost / SFollow: insert BEFORE post.
             if r.prefix_key is not None and gen not in self.rshared:
                 return REJ_SRC
-            # the contract (2): PrefixSharing needs the D-produced ordered exposure, including identity,
-            # count and layout. KernelReadPins callers may supply it too without an API migration.
+            # Prefix sharing requires the D-created descriptor to validate exposure independently.
+            # Callers without prefix sharing may supply it through the same API.
             if r.prefix_key is not None and dst_descriptor is None:
                 return REJ_PAGES
             if dst_descriptor is not None and dst_descriptor != (
@@ -1527,7 +1433,7 @@ class PdLedger:
             self._after()
             return eid
 
-    # PdCore[05e988a5] PExpose:612 + SFollow:1384 (PullSourceHeld): publication and protection
+    # PdCore PExpose + SFollow (PullSourceHeld): publication and protection
     # are one operation. No pull transport is enabled by this source-side primitive.
     def p_expose(self, gen: int, ntokens: int, peer: int, peer_room: int, peer_gen: int,
                  peer_xid: int, dst_pages: List[int], *, dst_descriptor: tuple) -> tuple:
@@ -1552,7 +1458,7 @@ class PdLedger:
             self._after()
             return eid, descriptor
 
-    # PdCore[05e988a5] PPost:556 (address plan observation, no standalone action).
+    # PdCore PPost (address plan observation, no standalone action).
     def p_plan(self, eid: int) -> Tuple[List[int], List[int], List[int]]:
         """Address triples (src, dst, length) for the engine call; computed here, never by the
         glue."""
@@ -1564,10 +1470,11 @@ class PdLedger:
                 self._shared_check(p)
             return plan_copy(self.layout, e.src, e.dst_layout, e.dst)
 
-    # PdCore[05e988a5] PSubmit:1163 / PCancelReg:1177.
+    # PdCore PSubmit / PCancelReg.
     def p_begin(self, eid: int) -> bool:
-        """POSTED -> SUBMITTED right before the engine call.  False if the entry was cancelled
-        (abort or peer loss arrived first): the glue must not call the engine."""
+        """Claim a registered entry immediately before calling the transfer engine.
+
+        False means cancellation won the race; the caller must not submit it."""
         with self._lock:
             self._refuse_on("D", "p_begin")
             e = self.entries.get(eid)
@@ -1587,7 +1494,7 @@ class PdLedger:
             self._after()
             return True
 
-    # PdCore[05e988a5] PCancelReg:1177; PEnd:640 cancels reg before ending the record.
+    # PdCore PCancelReg; PEnd cancels reg before ending the record.
     def p_cancel(self, eid: int) -> bool:
         """Cancel only a never-submitted entry. True is stopped evidence; False changes
         nothing (including SUBMITTED / ABORT_REQ / FAILED and already-collected entries).
@@ -1601,13 +1508,13 @@ class PdLedger:
             self._after()
             return True
 
-    # PdCore[05e988a5] PSentDone:582 / PSentFail:609 / PCancelReg:1177 / PDrainLibFail:1115.
+    # PdCore PSentDone / PSentFail / PCancelReg / PDrainLibFail.
     def _finish_entry(self, eid: int, e: _Entry, state: int) -> None:
         for p, _ in e.shared:
             self._shared_check(p)
         e.state = state
-        # PdCore[05e988a5] SFollow:1384: entry -> permanent quarantine retains one
-        # reference. Successful completion / never-submitted cancel returns it once.
+        # SFollow retains a shared-page reference permanently after an unproved failure.
+        # Successful completion or cancellation before submission releases it once.
         for p, _ in e.shared:
             if state == E_FAILED:
                 self.shared_quarantine.add((eid, p))
@@ -1634,7 +1541,7 @@ class PdLedger:
             self._shared_check(p)
         self._gc_req(e.gen)
 
-    # PdCore[05e988a5] Cqe:895 + PSentDone:582 / LibFailRet:1064 + PSentFail:609 / PDrainLibFail:1115.
+    # PdCore Cqe + PSentDone / LibFailRet + PSentFail / PDrainLibFail.
     def p_done(self, eid: int, ok: bool) -> int:
         """The engine call returned.  ok=True: local completion, source pages may be reused
         (SEND_DONE, or SEND_ACK if D aborted meanwhile).  ok=False: the writes may still land
@@ -1655,7 +1562,7 @@ class PdLedger:
             self._after()
             return res
 
-    # PdCore[05e988a5] PCancelReg:1177 / PNoPost:665 / PAbort:653.
+    # PdCore PCancelReg / PNoPost / PAbort.
     def p_abort(self, peer: int, peer_xid: int) -> int:
         """D aborted its transfer ``peer_xid``.  SEND_ACK: certified stopped now (never started,
         or already done); SEND_NOTHING: an engine call is running, the ACK follows from
@@ -1691,7 +1598,7 @@ class PdLedger:
             self._after()
             return res
 
-    # PdCore[05e988a5] observation of outgoing entry (no action).
+    # PdCore observation of outgoing entry (no action).
     def p_entry(self, eid: int) -> Tuple[int, int, int, int, int]:
         """(state, peer, peer_room, peer_gen, peer_xid) of a P-side entry; state 0 if unknown."""
         with self._lock:
@@ -1700,13 +1607,12 @@ class PdLedger:
                 return (0, 0, 0, 0, 0)
             return (e.state, e.peer, e.peer_room, e.peer_gen, e.peer_xid)
 
-    # ----------------------------------------------------------------------- reporting
-    # PdCore[05e988a5] Conservation observation (no action).
+    # PdCore Conservation observation (no action).
     def free_pages(self) -> int:
         with self._lock:
             return len(self.free)
 
-    # PdCore[05e988a5] Conservation observation (no action).
+    # PdCore Conservation observation (no action).
     def stats(self) -> Dict[str, int]:
         with self._lock:
             out = {name: 0 for name in PAGE_STATE_NAMES.values()}
@@ -1721,13 +1627,13 @@ class PdLedger:
                                       if e.state in (E_POSTED, E_SUBMITTED, E_ABORT_REQ))
             return out
 
-    # PdCore[05e988a5] Safety / implementation invariant scan (no action).
+    # PdCore Safety / implementation invariant scan (no action).
     def check(self) -> None:
         with self._lock:
             self._check()
 
     def _check(self) -> None:
-        """Full invariant scan (fail-stop).  Mirrors ArchivedRustLedger's FreePageUnowned/FreeListExact/OwnerMapConsistent and lifecycle contract"""
+        """Check ownership, free-list accounting, and in-flight holds; fail on any violation."""
         n = self.num_pages
         free_set = set(self.free)
         if len(free_set) != len(self.free):
@@ -1844,7 +1750,7 @@ class PdLedger:
         for e in self.entries.values():
             for p, _ in e.shared:
                 self._no_evict_under_rdma(p)
-        # KernelReadPins compatibility: the row binding is one to one and only holds unreleased generations
+        # the row binding is one to one and only holds unreleased generations
         if len(self.gen_of_row) != len(self.row_of_gen):
             self._fail("row binding not one to one")
         for row, gen in self.gen_of_row.items():

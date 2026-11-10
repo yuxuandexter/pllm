@@ -1,9 +1,8 @@
-"""Independent bf8d794 observations. No ledger import and no TLC result inputs.
+"""Check captured lifecycle state independently of the ledger and TLC results.
 
-Checks full ordered allocation maps, token bounds, actual array summaries and exact
-Shared holder deltas. A missing protocol field is an ERROR, not historical fallback.
-P prefill pins are observed here; PdCore's P KLaunch is only enabled after PPoll.
-"""
+Validate ordered allocation maps, token bounds, array summaries, and shared-page
+holder changes. Missing protocol fields are errors. Prefill pins are observed
+here because the trace model enables P KLaunch only after PPoll."""
 from __future__ import annotations
 from collections import Counter
 from copy import deepcopy

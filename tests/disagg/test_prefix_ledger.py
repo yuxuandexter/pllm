@@ -1,8 +1,7 @@
-"""PrefixSharing minimal P prefix ledger: CPU lifecycle, the contract sequence obligations, calibration.
+"""Check one-page prefix lifetimes and transfer ordering on CPU.
 
-One complete prefix page per generation; these tests make no radix/refinement claim.
-The nine named calibration cases also run against real source mutants in the prefix lifecycle runner.
-"""
+The nine calibration cases also run against source mutations. These tests do
+not establish a radix-cache refinement proof."""
 import array
 
 import pytest

@@ -1,6 +1,4 @@
-"""observed observer with a read-only final-state export for rejected before observations.
-The normal-record algorithm is byte-identical below apart from this export.
-"""
+"""Export observed state without mutation for checks before a rejected call."""
 from __future__ import annotations
 from collections import Counter
 from copy import deepcopy

@@ -1,7 +1,7 @@
-"""compatibility: --attention-workspace-mb reaches the flashinfer / TRT-LLM workspace allocation (CPU).
+"""The configured attention workspace must reach both backend allocations.
 
-GPU batch 2 crash: a prefill-only instance at Qwen3-32B geometry needed 146,800,640 B for
-flashinfer's batch_prefill_tmp_v but the fixed workspace was 128 MiB (attention/fi.py)."""
+A Qwen3-32B prefill required 146,800,640 bytes for batch_prefill_tmp_v alone,
+exceeding the original 128 MiB workspace. CPU stand-ins check propagation."""
 
 from __future__ import annotations
 

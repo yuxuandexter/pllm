@@ -1,21 +1,12 @@
-"""KernelReadPins red team findings fixed in compatibility (the CPU control-plane checks), on the real mini-sglang
-``Scheduler`` with the stub engine of test_scheduler_stub (CPU; Python ledger).
+"""Abort and completion must not release a table row or page pin twice.
 
-abort during an in-flight step (upstream mini-sglang, scheduler.py / table.py): an abort that arrives while
-the request's EOS decode step is in flight (overlap loop) freed the request twice: the abort path
-(``_process_one_msg``) and then ``_process_last_data`` (its "skip second free" guard does not
-cover aborts).  The table row went into the free list twice and two new requests shared it
-(non-PD: silently wrong output; PD: the core's bind_row refused the second binding and D stopped),
-and the aborted request still got its EOS reply.  Now the result of the in-flight step is dropped
-for an aborted request (freed once, no reply after the abort) and ``TableManager.free`` refuses a
-double free.
+An abort can arrive while the EOS step is still in flight. Its later result must
+not free the row again or send another reply. Reusing a duplicated free-list row
+would give two requests the same table row.
 
-copy-completion ordering: nothing checked that ``step_done(k)`` comes after step k's copy-done
-event.  ``PDHooks.complete(batch, copy_done)`` now refuses (LedgerViolation) unless the event's
-``query()`` is true, and the stub's event is a recording fake (``query()`` true only after
-``synchronize()``), so the red team's KDPRE / KDTICK orderings fail here; the test-side check on
-the ledger's ``step_done`` also catches unpinned-launch (unpinned at launch).
-"""
+The copy-done event must be ready before step_done releases pins. Recording CPU
+events expose calls made before synchronization or at launch time. These tests
+use the real scheduler with a CPU engine; they do not test CUDA execution."""
 
 from __future__ import annotations
 
@@ -34,7 +25,6 @@ from test_scheduler_stub import (EOS, build, close, finished, msg, no_pinned_mem
 PROMPTS = {u: [(u * 31 + i * 7) % 900 + 3 for i in range(3 + u % 9)] for u in range(1, 9)}
 
 
-# ------------------------------------------------------------------------------- abort during an in-flight step (upstream)
 def _inflight_eos(s, uid) -> bool:
     if s.data is None:
         return False
@@ -55,10 +45,10 @@ def _step_until(scheds, cond, timeout=10.0) -> bool:
 
 @pytest.mark.parametrize("mode", ["pd", "null"])
 def test_abort_while_the_eos_step_is_in_flight(mode):
-    """The red team's case (test_step_abort_finish.py), now with the intended outcome: uid 1's third
-    decode output is EOS; the abort arrives while that step is in flight; then two new requests.
-    Row freed once, nothing sent to uid 1 after the abort, the new requests get two rows and the
-    colocated reference tokens, no LedgerViolation; PD: D's ledger quiescent at the end."""
+    """Abort uid 1 while its EOS step runs, then admit two new requests.
+
+    The old row must be freed once, with no reply after abort. New requests
+    need distinct rows and the same tokens as the colocated reference."""
     prompt = [5, 6, 7, 8]
     p = None
     if mode == "pd":
@@ -148,7 +138,6 @@ def test_table_manager_refuses_a_double_free():
     assert sorted(tm._free_slots) == [0, 1, 2, 3]  # unchanged by the refused free
 
 
-# ------------------------------------------------------------------------------- copy-completion ordering
 def _watch_step_done(s, log):
     """Wrap the instance's (traced) ledger step_done: every glue call of it, from any site, is
     recorded with whether that step's copy-done event was synchronized and how many steps the

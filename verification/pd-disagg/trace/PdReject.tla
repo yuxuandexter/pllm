@@ -1,6 +1,6 @@
 ----------------------------- MODULE PdReject -----------------------------
-\* observed normal transition relation is imported byte-for-byte as PdTrace.
-\* No rejected action is added to TraceNext; all queries are at its terminal.
+\* Reuse PdTrace's successful transitions so rejection checks cannot weaken them.
+\* Query only terminal states; a rejected call is never replayed as success.
 EXTENDS PdTrace
 CONSTANT RejectEvent
 RE == RejectEvent
@@ -22,8 +22,8 @@ RejectBefore == /\ RejectSnapshot(RE.before)
                 /\ (RE.method # "evict" => rg[RE.i][RE.r]=RE.g)
 RejectAfter == RejectSnapshot(RE.after)
 RejectTerminal == l=Len(TLog)+1 /\ todo = << >>
-\* Full exhaustion is required by the runner. A printed marker alone never passes.
-\* Enumerate ALL observed terminal states; a single counterexample prevents agreement.
+\* Exhaust every observed terminal state; a printed marker cannot establish agreement.
+\* Any counterexample rejects the observation.
 RejectProbe == IF RejectTerminal THEN
   PrintT(<<"REJECTED_CALL", RE.seq, RejectBefore,
            ENABLED RejectAction, ENABLED (RejectAction /\ RejectAfter')>>)

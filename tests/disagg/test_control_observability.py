@@ -1,9 +1,7 @@
-"""compatibility: hooks the e2e kit needs (the CPU control-plane checks), CPU tests.
+"""CPU checks for checksums, faults, identity logs, errors, and disconnects.
 
-1 per-write KV checksum, 2 transfer fault switch, 3 request identity in logs, 4 error channel,
-5 client disconnect while D waits, 6 flush timing, 8 router backlog (7, stats on demand, is in
-test_scheduler_stub.py because it needs the scheduler hooks).
-"""
+Flush timing and connection bursts use real control paths. Scheduler-dependent
+stats checks live in test_scheduler_stub.py."""
 
 from __future__ import annotations
 
@@ -40,7 +38,6 @@ def pair():
         n.close()
 
 
-# --------------------------------------------------------------------------- 1. KV checksum
 def test_checksum_reference_properties():
     a = bytes((i * 7 + i // 256 * 31) % 256 for i in range(768))  # three different pages
     assert M.kv_checksum_bytes(a) == sum(b * ((i * M.CSUM_MUL) % M.CSUM_MOD + 1)
@@ -48,7 +45,7 @@ def test_checksum_reference_properties():
     # the pages have equal byte sums: plain position weights (i + 1) would miss their swap
     linear = lambda d: sum(b * (i + 1) for i, b in enumerate(d))  # noqa: E731
     swapped = a[256:512] + a[:256] + a[512:]  # two pages swapped: same multiset of bytes
-    assert linear(swapped) == linear(a)  # the weakness of the first design (found by this test)
+    assert linear(swapped) == linear(a)
     assert M.kv_checksum_bytes(swapped) != M.kv_checksum_bytes(a)
     flipped = bytearray(a)
     flipped[700] ^= 1
@@ -105,14 +102,13 @@ def test_checksum_missing_when_p_does_not_send(pair):
 
 
 def test_checksum_cpu_cost_scales():
-    """Cost of the reference (numpy) on this CPU: recorded in STEPS.md by a separate run."""
+    """Measure the CPU checksum reference without a GPU dependency."""
     data = bytes(1 << 20)
     t0 = time.perf_counter()
     M.kv_checksum_bytes(data)
     assert time.perf_counter() - t0 < 5.0
 
 
-# --------------------------------------------------------------------------- 2. fault switch
 def test_fault_rules_grammar():
     f = FaultInjector("delay_after_ms=5@every3;fail_after@n2;fail_before@n4;delay_before_ms=1@all")
     assert f.active and len(f.rules) == 4
@@ -181,7 +177,6 @@ def test_fault_delay_after_keeps_d_waiting(pair):
     assert run_until(lambda: uid in d.outputs and not d.running, [p, d])
 
 
-# --------------------------------------------------------------------------- 3. identity
 def test_identity_lines_link_rid_uid_room_h_xid(pair, caplog):
     caplog.set_level(logging.INFO, logger="minisgl.disagg")
     p, d = pair()
@@ -214,7 +209,6 @@ def test_every_quarantine_event_names_h_and_xid(pair, caplog):
     p.backend.hang.set()
 
 
-# --------------------------------------------------------------------------- 4. error channel
 def _frontend():
     from minisgl.server.api_server import FrontendManager
 
@@ -288,7 +282,6 @@ def test_error_field_roundtrips_through_messages():
         DetokenizeMsg(uid=1, next_token=2, finished=False))).error is None
 
 
-# --------------------------------------------------------------------------- 5. disconnect
 def test_disconnect_while_waiting_sends_abort_and_ends_stream():
     pytest.importorskip("fastapi")
     from minisgl.message import AbortMsg
@@ -365,7 +358,6 @@ def test_router_turns_client_disconnect_into_d_disconnect():
         s.shutdown()
 
 
-# --------------------------------------------------------------------------- 6. flush timing
 def test_flush_timing_counters(pair):
     p, d = pair()
     for room in range(1, 6):
@@ -377,7 +369,6 @@ def test_flush_timing_counters(pair):
     assert st["flush_ns_total"] >= st["flush_ns_max"] > 0
 
 
-# --------------------------------------------------------------------------- 8. router backlog
 def test_router_backlog_and_identity_headers():
     seen = []
 
@@ -430,7 +421,6 @@ def test_router_backlog_and_identity_headers():
         s.shutdown()
 
 
-# --------------------------------------------------------------------------- request_deadline (3) on P
 def test_p_abort_before_destination_refuses_it_at_once(pair):
     """P's request is aborted (router closed P's connection) before D's destination arrived:
     the later xfer_req is refused at once with stopped evidence, not at P's bootstrap timeout."""
@@ -445,11 +435,10 @@ def test_p_abort_before_destination_refuses_it_at_once(pair):
     assert d.ledger.stats()["quarantined"] == 0 and p.backend.calls == 0
 
 
-# --------------------------------------------------------------------------- compatibility (reply_batch_drain)
 def test_frontend_keeps_each_streams_first_reply_under_concurrency():
-    """reply_batch_drain guard on the API side: 32 streams, replies arriving in mixed batches (all first
-    tokens in one batch, as when many transfers land in one D tick), with the compatibility
-    disconnect polling active: every stream yields its replies in order, first one included."""
+    """Batched arrivals must preserve each stream's first token and reply order.
+
+    Feed 32 streams mixed reply batches while disconnect polling is active."""
     pytest.importorskip("fastapi")
     from minisgl.message import BatchFrontendMsg, UserReply
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One unchanged the contract CPU fake server: cold dedup, warm hit, then D page growth."""
+"""Exercise cold deduplication, a warm prefix hit, and decode growth on the CPU server."""
 import argparse
 import concurrent.futures
 from copy import deepcopy

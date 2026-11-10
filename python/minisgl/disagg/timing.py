@@ -1,9 +1,9 @@
-"""Optional ledger-timing observation. No CUDA synchronization or per-step I/O.
+"""Measure ledger calls without CUDA synchronization or per-step I/O.
 
-Core = outermost PdLedger method bodies, including lock acquisition. Diagnostics and
-auxiliary spans are inclusive; never sum them into core. CPU is calling-thread time.
-Enable at construction with MINISGL_PD_LEDGER_TIMING=1. Disabled ledgers have no wrappers.
-"""
+Core time includes the outermost method body and lock acquisition. Diagnostic
+and auxiliary spans overlap it and must not be added to it. CPU time belongs to
+the calling thread. MINISGL_PD_LEDGER_TIMING=1 enables wrappers at construction;
+disabled ledgers keep their original methods."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -228,7 +228,7 @@ class LedgerTiming:
                     self.unknown_calls += 1
                     self.issues.add("unknown_method:" + name)
             if group == "core" and depth:
-                return fn(*args, **kwargs)  # step_done -> complete: one outer interval
+                return fn(*args, **kwargs)  # Count step_done calling complete as one outer interval.
             context = (None, forced_scope) if forced_scope else self.context()
             if group == "core":
                 self.tls.depth = depth + 1

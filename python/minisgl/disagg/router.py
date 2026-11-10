@@ -1,16 +1,13 @@
-"""Minimal PD router: one request -> one P and one D (standard library only).
+"""Route each request to one prefill and one decode instance.
 
-Same shape as SGLang's PD router (sgl-model-gateway ``pd_router.rs``: inject a room, send the
-request to both sides, stream D's answer, cancel D when P fails).  The routing policy is
-untrusted (lifecycle contract): any choice of P and D, any room, is safe; the ledgers decide everything
-about pages.
+The router assigns a room, streams decode's response, and cancels decode when
+prefill fails. Routing does not grant page access; the ledgers validate identity
+and ownership independently. Repeated --prefill and --decode options select
+instances round-robin on each side.
 
     python -m minisgl.disagg.router --port 8000 \
         --prefill http://127.0.0.1:30000 --prefill-bootstrap-port 8998 \
-        --decode http://127.0.0.1:30001
-
-Several ``--prefill`` / ``--decode`` give any P:D ratio (round robin on each side).
-"""
+        --decode http://127.0.0.1:30001"""
 
 from __future__ import annotations
 
@@ -37,13 +34,12 @@ DEFAULT_DEADLINE_S = 900.0
 
 
 class Router:
-    """``deadline``: total time a request may take in the router (request completion clause (b), request_deadline).
-    Ordered after the instances' own record-level deadlines (P bootstrap 300 s, D waiting
-    330 s), so those fire first and the router deadline only catches what they cannot see.
-    On expiry, or when D's stream breaks off: an explicit ``data: [ERROR] ...`` line goes to
-    the client, and the connections to D and P are closed; each instance's API server turns
-    that disconnect into an abort of its request (D: cancel(h, x) to P; P: drops the request,
-    or refuses D's transfer with stopped evidence)."""
+    """The router deadline catches requests that instance deadlines cannot see.
+
+    Keep it above the prefill bootstrap and decode waiting timeouts so those
+    fire first. Expiry or a broken decode stream sends an explicit error to the
+    client and closes both connections. Each API server turns disconnect into
+    an abort of its local request."""
 
     def __init__(self, prefill: List[Tuple[str, int]], decode: List[str],
                  deadline: float = DEFAULT_DEADLINE_S) -> None:
@@ -262,9 +258,9 @@ def main() -> None:
                     help="bootstrap port of each --prefill, in the same order")
     ap.add_argument("--decode", action="append", required=True, help="D server URL")
     ap.add_argument("--request-deadline", type=float, default=DEFAULT_DEADLINE_S,
-                    help="total seconds per request (keep it above the instances' P bootstrap "
-                    "and D waiting timeouts); on expiry: error line to the client, P and D "
-                    "connections closed (they abort)")
+                    help="Total seconds per request. Keep above the prefill bootstrap and decode "
+                    "waiting timeouts. Expiry sends an error to the client and closes both "
+                    "instance connections to abort the request.")
     a = ap.parse_args()
     if len(a.prefill) != len(a.prefill_bootstrap_port):
         raise SystemExit("one --prefill-bootstrap-port per --prefill")

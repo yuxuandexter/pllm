@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Explicit rejected_calls entry point: unchanged observed normal checks + rejected PrefixSharing queries.
-All TLC child process groups are registered,
-bounded and reaped. Output directories must be new; no historical overwrite.
-"""
+"""Check successful trace actions and rejected prefix calls separately.
+
+Register and reap every bounded TLC process group. Require a fresh output
+directory so a run cannot overwrite earlier evidence."""
 from __future__ import annotations
 import argparse
 from copy import deepcopy
@@ -21,7 +21,7 @@ import extract_rejected_prefix
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
 MODEL=HERE/'PdCore.tla'
-PIN='7303701d7230a875e2aa71009fc4545ca6b9a493aa44e0b29408a2b48a3e120c'
+PIN='971aec4f4aad6b831081315628296b5d86809fe21aa55eddd938bb04b92ee82e'
 TRACEPIN='b6098492f6cf83728590fa230342f6184ccc7ed2d8cde72f75af1115454f124d'
 
 class RejectError(ValueError):

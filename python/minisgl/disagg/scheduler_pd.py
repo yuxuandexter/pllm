@@ -1,37 +1,16 @@
-"""Scheduler integration of PD disaggregation (the only torch-dependent part of the glue).
+"""Bind scheduler allocation and kernel execution to ledger decisions.
 
-``Scheduler`` (scheduler/scheduler.py) calls these hooks when ``--disaggregation-mode`` is
-``prefill`` or ``decode``:
+LedgerCacheManager replaces the free-slot manager so pages cannot be reused
+while a transfer or kernel still holds them. Prefill may share one full prefix
+page through the radix cache; decode receives the complete KV without sharing.
 
-    make_pd(config, engine, table_manager)  -> (LedgerCacheManager, PDHooks)
-    PDHooks.attach(scheduler)               after the managers exist
-    PDHooks.tick(idle)                      once per loop iteration (replaces blocking recv)
-    PDHooks.on_user_msg(msg) -> bool        True = parked by PD (not given to prefill yet)
-    PDHooks.on_abort(uid) -> bool           True = handled entirely by PD
-    PDHooks.launch(batch)                   after pages were allocated for a batch
-    PDHooks.out_loc(batch, input_mapping)   the KV slots the step writes (the core's out_loc)
-    PDHooks.complete(batch, copy_done)      after the batch's copy-done event synchronized (checked)
-    PDHooks.on_finished(req, next_token)    P: prefill done, before the request is freed
+k_launch checks each generation's table-row binding and returns the kernel
+arguments. FlashInfer and the KV-store kernel consume these arrays directly.
+Backends that read the page table retain the row check. The explicit "on" mode
+also compares ledger arrays against a page-table gather on every step.
 
-Every page goes through the ledger: ``LedgerCacheManager`` replaces mini-sglang's free-slot list
-(``CacheManager``) so that allocation, release and in-flight steps are all ledger calls.
-PrefixSharing enables one optional full P prefix page through the real radix cache and PdLedger.
-D remains naive and receives the complete KV. Multi-page radix is a multi-page prefix sharing obligation.
-
-Kernel arguments (KernelReadPins, lifecycle contract, kernel argument contract = ledger contract): every step is launched
-with ``ledger.k_launch``, which refuses the step or returns the arrays the kernels use (flashinfer
-``indptr`` / ``indices`` / ``last_page_len`` / ``qo_indptr`` and the KV-store ``out_loc``), computed
-from the ledger's own page lists.  ``stage_kargs`` copies them to the device (``PDKArgs`` on the
-batch); the fi attention backend and the scheduler use them instead of gathering from
-``page_table``, so the kernels read and write exactly the slots the ledger checked.  The 06b6baf
-page-table row check (page-table row check) is kept as a debug cross-check (``--disaggregation-row-check on``) and
-stays on for attention backends that still read the page table (trtllm, fa).
-
-Row binding (KernelReadPins compatibility, ledger contract): every generation is bound to its page-table row in
-the core (``bind_row``: P right after ``open_req`` in ``gen_for``, D in ``_commit_ready``), and
-``k_launch`` gets each item's row, so a row cannot be launched with any generation but its own;
-``release`` unbinds.  What the glue is still trusted for is listed in glue/README.md section 6.
-"""
+Staged arguments stay alive until the copy-done event completes. Only then may
+step_done release the step's pins. Generation bindings last until request release."""
 
 from __future__ import annotations
 
@@ -61,12 +40,9 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-# KernelReadPins: host staging of the core's kernel arguments.  "pinned" (default): one pinned int32 buffer
-# per step, one async H2D; the buffer is kept on the batch until step_done (its copy-done event
-# synchronized), so it is never reused or changed while a copy may still read it.  "pageable":
-# torch.frombuffer views of the core's bytearrays, H2D from pageable memory (the driver stages
-# the bytes before cudaMemcpyAsync returns; no extra copy here, no async).  GPU A/B: set
-# MINISGL_PD_KARGS_H2D=pageable.
+# Pinned staging uses one asynchronous copy and retains its buffer until step_done.
+# MINISGL_PD_KARGS_H2D=pageable uses bytearray views instead; the driver stages those
+# bytes before cudaMemcpyAsync returns. Keep either source alive through completion.
 KARGS_H2D = os.environ.get("MINISGL_PD_KARGS_H2D", "pinned")
 if KARGS_H2D not in ("pinned", "pageable"):
     raise ValueError(f"MINISGL_PD_KARGS_H2D={KARGS_H2D!r}: expected 'pinned' or 'pageable'")
@@ -162,29 +138,27 @@ class LedgerCacheManager:
             self.prefix_cache = NaivePrefixCache(device=self.device)
         # One additional tree lock per page with ANY ledger holder. Admission locks
         # remain separate, including the interval before hit obtains its req holder.
-        self._tree_pages = {}  # page -> handle, one page per node (single-page prefix sharing)
+        self._tree_pages = {}  # Each tree node represents one shared page.
         self._ledger_locks = set()
         self._prefix_rows = set()
         self._prepared = set()
-        self._admission_handles = {}  # row -> original (possibly empty) locked handle
+        self._admission_handles = {}  # Retain the admission handle even when its prefix is empty.
         self.gen_of_row: Dict[int, int] = {}
         self.uid_ctx = lambda uid: {}  # P: rid / room of a request, for the alloc trace line
-        # row check (red team page-table row check): a shadow of the page table holding the ledger's
-        # token_slots, on the page table's device; see check_rows
+        # Cache ledger slots on the table device so check_rows can compare without repeated queries.
         self.inst = inst
         self.row_check = row_check
         self._sh = torch.zeros_like(page_table) if row_check else None
-        self._sh_gen: Dict[int, int] = {}  # row -> gen whose slots the shadow row holds
-        self._sh_len: Dict[int, int] = {}  # row -> columns [0, len) filled from the ledger
+        self._sh_gen: Dict[int, int] = {}  # Shadow slots belong to this generation.
+        self._sh_len: Dict[int, int] = {}  # Only this row prefix has been fetched from the ledger.
         self.row_stats: Dict[str, int] = {"row_check": int(row_check), "row_checks": 0,
                                           "row_check_cols": 0, "row_check_fetched": 0,
                                           "row_check_ns_total": 0, "row_check_ns_max": 0}
 
-    # -- interface used by PrefillAdder / Scheduler ------------------------------------------
     def match_req(self, req) -> MatchResult:
         if not self.radix:
             return MatchResult(NaiveCacheHandle())
-        # PdCore[05e988a5] PHit:1314 chooses a single complete prefix page.
+        # PdCore PHit chooses a single complete prefix page.
         # Last input token is always computed. single-page prefix sharing deliberately caps the radix key.
         n = self.page_size if req.input_len > self.page_size else 0
         with self.ledger.prefix_guard():
@@ -229,7 +203,7 @@ class LedgerCacheManager:
         if not self.radix:
             return
         with self.ledger.prefix_guard():
-            # PdCore[05e988a5] PRecvReq:517 / PHit:1314. Full token identity, not hash.
+            # PdCore PRecvReq / PHit. Full token identity, not hash.
             tokens = req.input_ids[:self.page_size].tolist() if req.input_len >= self.page_size else None
             gen = self.ledger.open_req(-1, prefix_tokens=tokens)
             self.ledger.bind_row(row, gen)
@@ -257,10 +231,10 @@ class LedgerCacheManager:
             found = self.prefix_cache.match_prefix(key).cuda_handle
             if found.cached_len:
                 page = int(found.get_matched_indices()[0]) // self.page_size
-                # PdCore[05e988a5] PDedup:1352: remap before post; old physical read pins survive.
+                # PdCore PDedup: remap before post; old physical read pins survive.
                 self.ledger.dedup(gen, page)
             else:
-                # PdCore[05e988a5] PSeal:1344: completion, full page, no in-flight writer.
+                # PdCore PSeal: completion, full page, no in-flight writer.
                 page = self.ledger.seal(gen)
                 slots = self.ledger.token_slots(gen, 0, self.page_size)
                 result = self.prefix_cache.insert_prefix(
@@ -273,7 +247,7 @@ class LedgerCacheManager:
             self._sync_tree_holds()
 
     def _evict_for(self, needed: int) -> None:
-        # PdCore[05e988a5] SEvict:1364. Both changes are hidden until prefix_guard exits.
+        # PdCore SEvict. Both changes are hidden until prefix_guard exits.
         self._sync_tree_holds()
         candidates = sorted(self.prefix_cache._collect_leave_nodes_for_evict())
         for node in candidates:
@@ -294,7 +268,7 @@ class LedgerCacheManager:
             self._sync_tree_holds()
             if self.prefix_cache.size_info.protected_size:
                 raise L.LedgerViolation("PrefixSharing flush has protected tree pages")
-            # PdCore[05e988a5] FlushAll:1369; precheck every ledger holder before tree reset.
+            # PdCore FlushAll; precheck every ledger holder before tree reset.
             count = self.ledger.flush_shared()
             self.prefix_cache.evict(self.prefix_cache.size_info.evictable_size)
             self._tree_pages.clear()
@@ -305,13 +279,12 @@ class LedgerCacheManager:
         gen = self.gen_of_row.get(row)
         if gen is None:  # P side / local request: one ledger incarnation per table row use
             if getattr(self.ledger, "role", None) == "D":
-                # compatibility (the contract): D runs only requests committed from a landed transfer
-                # (PDHooks._commit_ready binds them); never open a local incarnation on D
+                # Decode generations must come from a landed handoff bound by _commit_ready.
                 raise L.LedgerViolation(
                     f"[pd inst={self.inst:#x}] D: page-table row {row} has no generation bound "
                     f"(a local request on a decode instance; only _commit_ready binds D rows)")
             gen = self.ledger.open_req(-1)
-            self.ledger.bind_row(row, gen)  # KernelReadPins compatibility: the core owns row <-> gen
+            self.ledger.bind_row(row, gen)  # The ledger owns the row binding so later launches can check it independently.
             self.gen_of_row[row] = gen
         return gen
 
@@ -327,7 +300,7 @@ class LedgerCacheManager:
                         self.ledger.note("alloc", uid=req.uid, **self.uid_ctx(req.uid))
                         got = self.ledger.alloc(gen, last_page - first_page)
                 else:
-                    # PdCore[05e988a5] DGrow:1206 on D after visibility.
+                    # PdCore DGrow on D after visibility.
                     self.ledger.note("alloc", uid=req.uid, **self.uid_ctx(req.uid))
                     got = self.ledger.alloc(gen, last_page - first_page)
                 if not got:
@@ -349,17 +322,13 @@ class LedgerCacheManager:
         self.page_table[row, lo : lo + len(slots)] = t
 
     def check_rows(self, step: int, items: List[Tuple[int, int, int]]) -> None:
-        """Red team page-table row check: the attention and KV-store kernels of a step read and write KV through
-        ``page_table[row, 0:device_len]``, and nothing else compared those entries with the
-        ledger.  Before step ``step`` is launched, every column [0, n) of every ``(row, gen, n)``
-        in ``items`` must equal ``ledger.token_slots(gen, 0, n)``; any difference raises
-        ``LedgerViolation`` (fail-stop) naming the row, gen, column and both slots.
+        """Catch page-table corruption before a backend can read another request's KV.
 
-        Exact, every step, every column.  Cheap because the ledger's answer is cached in a
-        shadow table on the page table's device: the slots of a live gen never change (the
-        ledger only appends pages), so each (row, gen) column is fetched from the ledger once
-        (decode: one new column per request per step); the comparison of all columns is a few
-        vectorised tensor ops with one host sync for the verdict."""
+        Compare every used column with ledger.token_slots before each step.
+        Cache expected slots on the table's device; growth appends columns,
+        while generation changes and prefix remaps invalidate the shadow.
+        A mismatch raises LedgerViolation with the row, generation, column,
+        and both slot values. The comparison needs one host synchronization."""
         if self._sh is None:
             return
         t0 = time.perf_counter_ns()
@@ -426,7 +395,7 @@ class LedgerCacheManager:
                 self.ledger.note("release", why=getattr(req, "pd_why", "finish"))
                 if self.radix:
                     with self.ledger.prefix_guard():
-                        # PdCore[05e988a5] PRelease:1086 / SFollow:1384. Ledger retains
+                        # PdCore PRelease / SFollow. Ledger retains
                         # req refs until the final KDone, and entry/quarantine refs separately.
                         self.ledger.release(gen)
                         self.unlock(self._admission_handles.pop(req.table_idx))
@@ -448,12 +417,11 @@ class LedgerCacheManager:
 
 
 def make_gpu_flush_hook():
-    """``cudaDeviceFlushGPUDirectRDMAWrites(CurrentDevice, ToOwner)`` (H-visible).  On by
-    default (the contract): D calls it before the ledger records a landing.  Same call as the visibility litmus test
-    program (CUDA runtime wrapper): ctypes on the libcudart that torch loaded
-    (found in /proc/self/maps), enum values from cuda-13 ``driver_types.h:1902-1911`` as cited
-    there (target CurrentDevice = 0, scope ToOwner = 100).  Not yet run inside mini-sglang on
-    a GPU."""
+    """Make GPUDirect RDMA writes visible before recording a landing.
+
+    Load the CUDA runtime already used by torch. CurrentDevice and ToOwner use
+    the CUDA runtime enum values 0 and 100. The consumer must flush before it
+    launches a kernel that reads the transferred pages."""
     import ctypes
 
     path = None
@@ -485,10 +453,8 @@ def make_pd(config: SchedulerConfig, engine, table_manager: TableManager, backen
         raise ValueError("PD supports --cache-type naive or radix")
     if config.cache_type == "radix" and config.disaggregation_mode != "prefill":
         raise ValueError("PrefixSharing: D needs --cache-type naive (receives complete KV)")
-    # Z3 finding row-width bound (row-width bound at page size 64): the glue maps whole pages, up to ceil(Lmax / ps) * ps columns,
-    # but a page-table row is only align_up_32(Lmax) wide (engine/engine.py:67-68).  Refuse such
-    # a configuration at start instead of resizing the engine's table (non-PD code unchanged);
-    # this also keeps the decode replay table (width // ps) wide enough.
+    # Whole-page mapping may exceed the engine's 32-token-aligned row width.
+    # Reject that geometry before allocation; the decode replay table needs the same bound.
     width = int(engine.page_table.shape[1])
     need = div_ceil(engine.max_seq_len, config.page_size) * config.page_size
     if need > width:
@@ -506,8 +472,7 @@ def make_pd(config: SchedulerConfig, engine, table_manager: TableManager, backen
     layout = [num_layers, page_size, kv_heads, head_dim, buf.element_size(), pool_pages,
               buf.data_ptr(), L.DTYPE_CODES[dtype_name], model_id]
     inst = M.new_instance_id()
-    # compatibility (the contract): the ledger core holds this instance's role and refuses the other side's
-    # primitives (and, on D, local requests, early decode allocs, launches without a transfer)
+    # The ledger enforces the instance role, including decode admission and visibility.
     role = {"prefill": "P", "decode": "D"}.get(config.disaggregation_mode)
     if role is None:
         raise ValueError(f"PD: --disaggregation-mode {config.disaggregation_mode!r}")
@@ -518,16 +483,14 @@ def make_pd(config: SchedulerConfig, engine, table_manager: TableManager, backen
     # Log the implementation and the role reported by the ledger.
     logger.info("PD ledger: %s role=%s", L.ledger_impl(), ledger.role)
     ledger = T.wrap(ledger, inst, role)
-    # KernelReadPins: the dummy slot CUDA-graph padding rows read and write must be the one k_launch hands out
-    # for padding rows (num_pages * page_size, Engine.__init__ fills the dummy row with it)
+    # Graph padding must use the same reserved dummy slot as k_launch.
     dummy = getattr(engine, "dummy_req", None)
     if dummy is not None:
         got = int(engine.page_table[dummy.table_idx, 0])
         if got != engine.num_pages * config.page_size:
             raise ValueError(f"PD: dummy page-table row holds slot {got}, the ledger's dummy slot "
                              f"is {engine.num_pages * config.page_size}")
-    # the attention kernels take the core's arrays only if the backend says so (fi); backends that
-    # still read page_table (trtllm, fa, hybrids) keep the 06b6baf row check (page-table row check) on
+    # Backends that still read page_table need the row check to validate their inputs.
     kread = bool(getattr(engine.attn_backend, "takes_pd_kargs", False))
     mode = getattr(config, "disaggregation_row_check", "auto")
     mode = {True: "on", False: "off"}.get(mode, mode)
@@ -566,14 +529,11 @@ _CSUM_W: Dict[Tuple[str, int], torch.Tensor] = {}
 
 
 def kv_checksums(buf: torch.Tensor, pages: List[int]) -> List[int]:
-    """Per-(K/V, layer) checksums of ``pages`` in the KV pool ``buf`` (shape
-    (2, L, pool_pages, page_size, H, D), any dtype), computed on buf's device.
+    """Match kv_checksum_bytes for each KV layer using device integer arithmetic.
 
-    Same value as ``messages.kv_checksum_bytes`` over each slab's bytes in page order:
-    C = sum_i b_i * w(i), w(i) = ((i * 40503) mod 65521) + 1, in int64 (exact, deterministic,
-    no overflow below 5e11 bytes per slab).  One slab at a time (index_select of n pages,
-    uint8 -> int64, multiply by a cached weight vector, sum), so the extra device memory is
-    about 17x one slab (uint8 copy, int64 copy, product); one host sync at the end."""
+    Process one slab at a time to limit temporary storage to about 17 times
+    that slab's bytes. Copy all checksum results to the host in one synchronization.
+    Slabs below 5e11 bytes cannot overflow the int64 reduction."""
     u8 = buf.view(torch.uint8)  # (2, L, pool_pages, ps, H, D * itemsize)
     idx = torch.tensor(pages, dtype=torch.long).to(buf.device)
     two, nl = u8.shape[0], u8.shape[1]
@@ -612,8 +572,7 @@ class PDHooks:
         self.table_manager = table_manager
         self.page_size = config.page_size
         self.step = 0
-        # KernelReadPins: kernel arguments from the core (k_launch); xcheck (debug, --disaggregation-row-check
-        # on) also compares them with the 06b6baf page-table gather every step (fail-stop)
+        # Debug mode cross-checks ledger arrays against the page table before every step.
         self.kread = kread
         self.xcheck = xcheck
         self.kargs_pinned = KARGS_H2D == "pinned"
@@ -628,7 +587,7 @@ class PDHooks:
         self._last_log = 0.0
         self._last_stats: Dict[str, int] = {}
         self.kv_buf = kv_buf
-        # per-write KV checksum (compatibility): off by default; --disaggregation-kv-checksum
+        # per-write KV checksum: off by default; --disaggregation-kv-checksum
         self.checksum = bool(getattr(config, "disaggregation_kv_checksum", False))
         csum_fn = None
         if self.checksum:
@@ -653,7 +612,7 @@ class PDHooks:
                                flush_hook=flush, checksum_fn=csum_fn,
                                checksum_fatal=bool(getattr(
                                    config, "disaggregation_kv_checksum_fatal", False)))
-        # stats on demand (compatibility): GET http://127.0.0.1:<port>/pd_stats; 0 = off
+        # stats on demand: GET http://127.0.0.1:<port>/pd_stats; 0 = off
         self._stats_req = threading.Event()
         self._stats_ready = threading.Event()
         self._stats_lock = threading.Lock()
@@ -672,7 +631,6 @@ class PDHooks:
                     "instance": self.inst, "records": None}
         return self.timing.snapshot(after, through)
 
-    # ------------------------------------------------------------------ stats on demand
     def snapshot(self) -> Dict:
         """Full stats of this instance (scheduler thread)."""
         out = {"mode": self.mode, "instance": self.inst, "parked": len(self.parked),
@@ -702,7 +660,7 @@ class PDHooks:
             self._stats_ready.set()
 
     def _fail_reply(self, uid: int, why: str) -> None:
-        """Error channel (compatibility): the request ends with an explicit error, not a plain EOS."""
+        """Error channel: the request ends with an explicit error, not a plain EOS."""
         s = self.sched
         s.send_result([DetokenizeMsg(uid=uid, next_token=s.eos_token_id, finished=True,
                                      error=f"PD {self.mode}: {why}")])
@@ -710,7 +668,6 @@ class PDHooks:
     def attach(self, sched: Scheduler) -> None:
         self.sched = sched
 
-    # ------------------------------------------------------------------ loop
     def tick(self, idle: bool) -> None:
         self.pd.poll(timeout=0.002 if idle else 0.0)
         self._serve_stats_request()
@@ -761,7 +718,7 @@ class PDHooks:
             n = len(prompt)
             ids = torch.cat([prompt, torch.tensor([first], dtype=torch.int32)])
             self.cache.gen_of_row[row] = gen
-            self.ledger.bind_row(row, gen)  # KernelReadPins compatibility: k_launch checks rows against this
+            self.ledger.bind_row(row, gen)  # k_launch checks rows against this
             self.cache.write_rows(row, gen, len(self.ledger.pages_of(gen)))
             s.token_pool[row, : n + 1].copy_(ids.pin_memory(), non_blocking=True)
             finished = msg.sampling_params.max_tokens <= 1 or (
@@ -795,7 +752,6 @@ class PDHooks:
                         " ".join(f"{k[7:] if k.startswith('ledger_') else k}={st.get(k, 0)}"
                                  for k in keys))
 
-    # ------------------------------------------------------------------ messages
     def on_user_msg(self, msg: UserMsg) -> bool:
         d = msg.disagg or {}
         room = d.get("bootstrap_room")
@@ -844,7 +800,6 @@ class PDHooks:
             return True
         return False
 
-    # ------------------------------------------------------------------ steps
     def launch(self, batch: Batch) -> None:
         """KLaunch of the batch's step: the ledger core checks every row (the generation bound
         to that table row, live, its pages PRIVATE to it, incoming transfer landed and visible,
@@ -855,7 +810,7 @@ class PDHooks:
         if self.timing is not None:
             self.timing.bind(getattr(batch, "pd_timing", None), batch.pd_step)
         items = [(self.cache.gen_for(r.table_idx), r.cached_len, r.device_len) for r in batch.reqs]
-        if self.cache.row_check:  # page-table row check (06b6baf): debug cross-check, or a page-table backend
+        if self.cache.row_check:  # Debug mode and page-table backends require this independent check.
             self.cache.check_rows(self.step, [(r.table_idx, g, r.device_len)
                                               for r, (g, _, _) in zip(batch.reqs, items)])
         npad = len(batch.padded_reqs) - len(batch.reqs)
@@ -888,18 +843,18 @@ class PDHooks:
             batch.pd_timing["launched"] = True
 
     def out_loc(self, batch: Batch, input_mapping) -> torch.Tensor:
-        """The KV slots the step's store kernel writes: the core's out_loc (06b6baf gathered
-        ``page_table[input_mapping]``)."""
+        """Use the ledger's checked write slots instead of gathering them again."""
         ka: PDKArgs = batch.pd_kargs  # type: ignore[attr-defined]
         if self.xcheck:
             self._xcheck(batch, ka, input_mapping)
         return ka.out_loc
 
     def kargs_seen(self, batch: Batch) -> None:
-        """argument capture/argument capture: observe after prepare_metadata, before ForwardInput leaves scheduler.
-        fi reads metadata.indices; stores use batch.out_loc. Later graph/plan copies are
-        still a trusted boundary. One blocking D2H for both device arrays, on this stream.
-        """
+        """Capture final scheduler arguments after metadata preparation.
+
+        Observe metadata.indices and batch.out_loc independently of the ledger.
+        Later plan and graph copies remain trusted. Combine both device arrays
+        into one blocking copy on the scheduler stream."""
         if not T.ENABLED or not T.STEP_LINES or not isinstance(self.ledger, T.TracedLedger):
             return
         t0 = time.perf_counter_ns()
@@ -936,9 +891,9 @@ class PDHooks:
         st["kargs_seen_ns_max"] = max(st["kargs_seen_ns_max"], dt)
 
     def _xcheck(self, batch: Batch, ka: PDKArgs, input_mapping) -> None:
-        """Debug (``--disaggregation-row-check on``): the core's arrays must equal what 06b6baf
-        gathered from the page table (fi ``prepare_metadata`` and ``_prepare_batch``); one host
-        sync per step.  Any difference raises ``LedgerViolation`` (fail-stop)."""
+        """Debug mode compares ledger arrays with the page-table gather each step.
+
+        One host synchronization obtains the verdict; a mismatch is fatal."""
         pt = self.cache.page_table
         reqs = batch.padded_reqs
         want_ip = [0]
@@ -963,11 +918,10 @@ class PDHooks:
             raise L.LedgerViolation(msg)
 
     def complete(self, batch: Batch, copy_done=None) -> None:
-        """KDone: called after the step's copy-done event synchronized (stream completion), so every kernel of
-        the step, and every copy of its staged arguments, has finished.  The event is checked
-        here, before the ledger is told (red team copy-completion ordering): no event, or one whose
-        ``query()`` is not yet true, is a glue ordering bug and stops the process (the step's
-        pages would be unpinned while its kernels may still read or write them)."""
+        """Require copy completion before releasing the step's page pins.
+
+        A missing event or false query means kernels or argument copies may
+        still use the pages. Refuse the call before notifying the ledger."""
         if copy_done is None or not copy_done.query():
             raise L.LedgerViolation(
                 f"[kdone inst={self.inst:#x}] step {getattr(batch, 'pd_step', '?')}: step_done "
@@ -983,7 +937,7 @@ class PDHooks:
         gen = self.cache.gen_of_row.get(req.table_idx)
         if gen is None:
             return
-        # PdCore[05e988a5] PSeal:1344 / PDedup:1352 precede PPost:556.
+        # PdCore PSeal / PDedup precede PPost.
         self.cache.prepare_prefix(req)
         csum = None
         if self.checksum:  # after prefill completed (step synchronized), before p_post
@@ -1003,7 +957,7 @@ class PDHooks:
 
 
 def _start_stats_server(hooks: PDHooks, port: int):
-    """GET /pd_stats on 127.0.0.1:<port> returns the instance's stats as JSON (compatibility)."""
+    """GET /pd_stats on 127.0.0.1:<port> returns the instance's stats as JSON."""
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

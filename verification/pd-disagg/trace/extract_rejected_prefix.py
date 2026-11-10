@@ -1,7 +1,7 @@
-"""Rejection-only observed prefix extraction. Normal input uses extract_observed unchanged.
-Derived from extract_observed; differences: read-only observer state, terminal identity
-admission for pre-alloc hit, a terminal Nop, and exported numbering context.
-"""
+"""Expose the state before a rejected call without replaying it as success.
+
+Use the observed extractor's normal mapping with read-only observer state,
+identity admission before allocation, a terminal Nop, and numbering context."""
 from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict

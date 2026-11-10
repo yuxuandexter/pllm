@@ -2,11 +2,10 @@
 EXTENDS Integers, TLAPS
 
 (*************************************************************************
- Explicit INFINITE execution countermodels to two weakened versions of DelayedAccess.
- These are positive proofs of concrete models, not timeout-based evidence.
- Isolation/Integrity/Finality are instantiated FROM the original module.
- DelayedAccess itself is not retained: each model violates exactly the removed clause.
- The original theorem and the pinned legacy/ledger engine models are unchanged.
+ These infinite-execution countermodels show why both parts of DelayedAccess
+ matter. Each model violates only the removed part and instantiates Isolation,
+ Integrity, and Finality from the original module. The proof checks concrete
+ witnesses; it does not infer consistency from a timeout.
 *************************************************************************)
 Never2(k, t) == FALSE
 Zero2(k, t) == 0

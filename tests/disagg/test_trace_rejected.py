@@ -1,4 +1,4 @@
-"""the contract: refusals are observable without changing successful traces or exceptions."""
+"""Refusals remain observable without changing successful traces or exceptions."""
 import io
 import json
 import logging

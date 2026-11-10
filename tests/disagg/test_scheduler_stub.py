@@ -61,10 +61,9 @@ def no_pinned_memory(monkeypatch):
 
 
 class _Done:
-    """Recording fake of the step's copy-done CUDA event (red team copy-completion ordering): the
-    stub's "GPU" is never done before the host synchronizes, so ``query()`` is True only after
-    ``synchronize()``.  ``step`` = the batch's PD step (None outside PD); StubEngine.events keeps
-    every PD step's event, so a test can check that step_done(k) came after step k's event."""
+    """Require host synchronization before the fake copy-done event becomes ready.
+
+    Recording each event lets tests detect step_done before copy completion."""
 
     def __init__(self, step=None) -> None:
         self.step = step
@@ -82,12 +81,11 @@ DUMMY_KV = 250.0  # what a padding row writes (the real graph writes the dummy t
 
 
 class StubEngine:
-    """``kread=True``: the "kernels" take the ledger core's arrays (``batch.pd_kargs`` indices /
-    indptr, ``batch.out_loc``), like the fi backend in PD mode (KernelReadPins); ``kread=False``: they read
-    and write through ``page_table`` like 06b6baf (and trtllm / fa).  Every step with core
-    arrays also compares them with the 06b6baf gather from the page table (``kargs_same`` /
-    ``kargs_diff``).  ``pad=True``: decode batches are padded to GRAPH_BS with a dummy request
-    whose page-table row holds the dummy slot, as GraphRunner.pad_batch / Engine.__init__ do."""
+    """Exercise either ledger arrays or the page-table backend through the same stub.
+
+    kread selects ledger arrays. Compare them with an independent page-table
+    gather on every step to expose disagreements. pad adds a dummy request at
+    CUDA-graph batch sizes, using the same reserved slot as the real engine."""
 
     def __init__(self, num_pages: int, ps: int, max_running: int, max_seq: int,
                  kread: bool = True, pad: bool = False) -> None:
@@ -110,8 +108,8 @@ class StubEngine:
         self.kargs_diff = 0
         self.pad_rows = 0
         self.pad_slots: set = set()
-        self.eos_at: dict = {}  # uid -> decode output index that is EOS (tests of overlap release)
-        self.events: dict = {}  # PD step -> its copy-done event (_Done)
+        self.eos_at: dict = {}  # Control which decode output ends each request.
+        self.events: dict = {}  # Retain events to test overlapping lifetimes.
         self._nout: dict = {}
         if pad:
             self.dummy_req = Req(input_ids=torch.tensor([0], dtype=torch.int32),
@@ -131,8 +129,7 @@ class StubEngine:
         return self.kv[kv, layer].view(-1, H, HD)
 
     def _gather_06b6baf(self, batch):
-        """What 06b6baf handed to the kernels: fi prepare_metadata's indices / cu_seqlens_k and
-        _prepare_batch's out_loc = page_table[input_mapping], from the page table."""
+        """Reconstruct attention and store slots independently from the page table."""
         ind, ip, ol = [], [0], []
         for r in batch.padded_reqs:
             ind += self.page_table[r.table_idx, : r.device_len].tolist()
@@ -163,7 +160,7 @@ class StubEngine:
             if use_core:  # attention reads indices[indptr[j] : indptr[j] + device_len]
                 ip0 = int(ka.indptr_cpu[j])
                 slots = ka.indices[ip0 : ip0 + req.device_len].long()
-            else:  # 06b6baf / page-table backends: attention reads page_table[row, :device_len]
+            else:  # Page-table backends read the row through device_len.
                 slots = self.page_table[row, : req.device_len].long()
             if j >= batch.size:  # CUDA-graph padding row: writes the dummy token's KV, no output
                 self.pad_rows += 1
@@ -324,8 +321,9 @@ def reference(prompts, max_tokens, ps):
 
 
 def pd_pair(ps, row_check="auto", kread=True, pad=False, **kw):
-    """row_check: "auto" | "on" | "off" (or True / False = on / off); kread: the stub
-    kernels read the ledger core's arrays (fi, KernelReadPins) or the page table (06b6baf, trtllm, fa)."""
+    """Use row_check to select auto, on, or off; booleans retain the on/off aliases.
+
+    kread selects ledger arrays instead of page-table lookups."""
     bp, bd = MemBackend(f"p{time.monotonic_ns()}"), MemBackend(f"d{time.monotonic_ns()}")
     p = build("prefill", ps=ps, backend=bp, row_check=row_check, kread=kread)
     d = build("decode", ps=ps, backend=bd, row_check=row_check, kread=kread, pad=pad, **kw)
@@ -393,7 +391,7 @@ def test_failed_transfer_quarantines_and_others_still_correct():
     send_pd(p, d, 1, 701, prompts[1], 3)
     assert run([p, d], lambda: finished(d, [1]))  # ends (EOS) after the failure
     assert d.outputs[1] == [(EOS, True)]
-    assert "transfer failed" in d.errors[1]  # explicit error, not a plain EOS (compatibility)
+    assert "transfer failed" in d.errors[1]  # explicit error, not a plain EOS
     assert d.cache_manager.ledger.stats()["quarantined_transfer_failed"] == 4
     assert p.cache_manager.ledger.stats()["quarantined_transfer_failed"] == 4
     for uid in range(2, 6):
@@ -426,7 +424,6 @@ def test_max_tokens_one_finishes_at_commit():
     close(p, d)
 
 
-# ------------------------------------------------------------------------------- compatibility (Z3)
 def _cfg(ps):
     return SimpleNamespace(
         tp_info=DistributedInfo(0, 1), cache_type="naive", page_size=ps,
@@ -440,8 +437,9 @@ def _cfg(ps):
 
 
 def test_row_width_row_width_config_refused_at_start():
-    """Z3 row-width bound (row-width bound at page size 64) counterexample: max_seq_len 1025, page 64, 17 pages -> the engine's
-    row width is align_up_32(1025) = 1056 but whole-page mapping needs 1088 columns."""
+    """Whole-page mapping needs 1088 columns when max_seq_len is 1025 and pages hold 64 tokens.
+
+    The engine allocates only 1056 columns, so startup must reject this geometry."""
     eng = StubEngine(17, 64, 4, 1056)
     eng.max_seq_len = 1025
     with pytest.raises(ValueError, match="row width 1056 < 1088"):
@@ -479,7 +477,6 @@ def test_layout_carries_dtype_and_model_identity():
         hooks.shutdown()
 
 
-# ------------------------------------------------------------------------------- compatibility
 def test_torch_checksum_matches_reference():
     """scheduler_pd.kv_checksums (torch, any dtype, runs where the pool lives) equals the
     reference messages.kv_checksum_bytes over each slab's bytes in page order."""
@@ -538,10 +535,10 @@ def test_stats_on_demand_endpoint():
 
 
 def test_p_drops_the_request_on_client_abort():
-    """request_deadline (3): the router aborts P by closing P's connection; P's API server turns the
-    disconnect into an AbortBackendMsg (test_control_observability.test_disconnect_while_waiting_...).  Here:
-    what P's scheduler does with it.  P drops the request and refuses D's transfer with
-    stopped evidence, so D ends the request with an explicit error and quarantines nothing."""
+    """A router disconnect must cancel prefill and resolve decode with stop evidence.
+
+    The API converts disconnect into AbortBackendMsg; this test exercises the
+    scheduler's handling of it. No unused destination page should quarantine."""
     p, d, bp, _ = pd_pair(1)
     dis = {"bootstrap_host": "127.0.0.1", "bootstrap_port": p.pd.pd.port, "bootstrap_room": 4242}
     d.inbox.append(msg(1, [9, 8, 7], 3, dis))
@@ -556,11 +553,9 @@ def test_p_drops_the_request_on_client_abort():
     close(p, d)
 
 
-# ------------------------------------------------------------------------------- compatibility (reply_batch_drain)
 @pytest.mark.parametrize("overlap", [True, False])
 def test_many_landings_in_one_tick_keep_the_first_token(overlap):
-    """reply_batch_drain guard: 24 transfers land in the same D tick (P's engine gated, then released at once);
-    every D stream must start with P's first token and have exactly max_tokens tokens."""
+    """A burst of 24 completed transfers must preserve the first token on every stream."""
     prompts = {u: [(u * 13 + i) % 900 + 3 for i in range(2 + u % 5)] for u in range(1, 25)}
     ref = reference(prompts, 5, 1)
     p, d, bp, _ = pd_pair(1)

@@ -1,6 +1,6 @@
-# provable-pd-serving
+# pLLM: Provable LLM Serving
 
-`provable-pd-serving` is a disaggregated Prefill-Decode LLM serving engine built on [`mini-sglang`](https://github.com/sgl-project/mini-sglang) and [Mooncake](https://github.com/kvcache-ai/Mooncake) GPUDirect RDMA with [`vstack`](https://github.com/yuxuandexter/vstack). It replaces scattered local counters and timeout heuristics with a single versioned KV page state machine, **`PdLedger`**, enforcing **Isolation**, **Integrity**, **Finality**, and **Conservation**.
+`pLLM` (Provable LLM) is a disaggregated Prefill-Decode LLM serving engine built on [`mini-sglang`](https://github.com/sgl-project/mini-sglang) and [Mooncake](https://github.com/kvcache-ai/Mooncake) GPUDirect RDMA with [`vstack`](https://github.com/yuxuandexter/vstack). It replaces scattered local counters and timeout heuristics with a single versioned KV page state machine, **`PdLedger`**, enforcing **Isolation**, **Integrity**, **Finality**, and **Conservation**.
 
 ![PdLedger page lifecycle resolving the local-timeout dilemma](assets/pdledger-lifecycle.gif)
 
@@ -9,9 +9,10 @@
 ### 1. Run Disaggregated PD Serving
 
 ```bash
-git clone https://github.com/yuxuandexter/provable-pd-serving.git
-cd provable-pd-serving
+git clone https://github.com/yuxuandexter/pllm.git
+cd pllm
 python3 -m pip install -r tests/requirements.txt
+export PYTHONPATH="$PWD/python"
 
 # Fast CPU slice demo (<10s, no GPU required): test 1P1D scheduling, RDMA lifecycle, prefix cache, and fault injection
 bash tests/run.sh

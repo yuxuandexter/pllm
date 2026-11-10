@@ -1,4 +1,4 @@
-"""argument capture: summarize observed metadata/store arrays and keep emitted seq order."""
+"""Argument capture must preserve observed arrays and trace sequence order."""
 import json
 from types import SimpleNamespace as NS
 

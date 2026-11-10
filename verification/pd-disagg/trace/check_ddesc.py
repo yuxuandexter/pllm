@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Partial D descriptor observations for observed PDT; never certifies full closure.
+"""Check partial destination-descriptor observations without claiming full closure.
 
-No ledger import, no synthesized layout, no change to observed/rejected_calls. A separate optional
-legacy run preserves the old verdict. Use Python 3; add --legacy only when TLC is installed.
-"""
+Read captured layouts and calls independently of the ledger. --legacy adds a
+separate TLC result when TLC is installed; it does not strengthen this verdict."""
 from __future__ import annotations
 import argparse
 from copy import deepcopy
@@ -152,8 +151,8 @@ def audit(records):
             if r.get('ev')=='klaunch':
                 result['kernel_steps']+=1
                 result['kernel_items']+=len(r.get('it',[]))
-        # Preserve calibrated ordered-map -> actual kd/kh/kp/ks validation, plus
-        # holder/lifecycle checks. This routine does not call the implementation ledger.
+        # Validate ordered maps against captured kernel arguments and holder lifetimes
+        # without calling the implementation ledger.
         checks=observe.audit(deepcopy(raw))
         bad=next((c for c in checks if not c['ok']),None)
         if bad:

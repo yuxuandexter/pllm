@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Explicit descriptor_capture/descriptor-capture observer. Does not change observed/rejected_calls or import PdLedger.
-CLOSED concerns captured ordered descriptor/argument equality, not RDMA visibility.
-Missing/unsupported capture is inconclusive; --legacy retains an independent rejected_calls result.
-"""
+"""Compare captured descriptors and kernel arguments independently of PdLedger.
+
+CLOSED covers ordered argument equality, not RDMA visibility. Missing or
+unsupported capture is inconclusive. --legacy keeps a separate rejected-call
+result."""
 from __future__ import annotations
 import argparse
 from copy import deepcopy

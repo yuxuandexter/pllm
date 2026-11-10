@@ -1,18 +1,11 @@
-"""KernelReadPins compatibility (trace conformance compatibility, trace/README.md 15.7): per-step trace lines and P entry pages.
+"""Step records must expose every launch and completion in sequence order.
 
-1. Every ``launch`` / ``k_launch`` writes a ``klaunch`` step line (step, ``it`` = [[row, gen, rd, wr], ...]
-   in batch order, ``npad``) and every ``complete`` / ``step_done`` a ``kdone`` line, P and D, so
-   D's step completions and a request's later launches are observed (no inferred KDone), and no
-   ledger call consumes a seq without a line (the untraced completion P holes are gone; ``MINISGL_PD_TRACE_STEPS
-   =0`` brings them back).  NoFreeUnderRead is decidable from the lines: a release while a step
-   that reads the gen is between its klaunch and kdone frees no page.
-2. ``begin`` / ``done`` / ``abort`` lines carry the entry's source pages and their states before /
-   after the call (one test per outcome), so failed-write-not-drained (failed -> drained) shows on the line.
-3. ``StepLineHandler``: in a server process step lines are held and written with the next other
-   line in one write (or at the line / age cap, flush, scheduler idle, process exit), file order =
-   seq order.
-Runs with the Python ledger.
-"""
+See verification/pd-disagg/trace/README.md for trace conformance checks.
+
+Each record keeps the batch's row, generation, and token bounds so tests can
+check NoFreeUnderRead without ledger internals. Source-entry snapshots expose
+quarantine after failed writes. Server buffering must preserve record order
+and flush held steps at its limits, scheduler idle, and process exit."""
 
 from __future__ import annotations
 
@@ -90,7 +83,7 @@ def of(rs, **kw):
 
 
 def steps_of(rs, inst):
-    """step -> (klaunch line, kdone line or None) of one instance."""
+    """Pair each instance step with its launch and optional completion record."""
     out = {}
     for r in of(rs, k="step", inst=inst):
         if r["ev"] == "klaunch":
@@ -112,7 +105,6 @@ def _two_requests(nodes, max_new=4):
     return p, d
 
 
-# ------------------------------------------------------------------------------ 1. step lines
 def test_step_lines_on_p_and_d(monkeypatch, nodes, pdt):
     cls = L.PyRefLedger
     monkeypatch.setattr(L, "RefLedger", cls)  # what toy.ToyP / ToyD construct
@@ -189,7 +181,6 @@ def test_refused_launch_and_completion_write_only_rejected_lines(pdt):
     assert [(r["ev"], r["step"]) for r in of(pdt, k="step")] == [("klaunch", 1), ("kdone", 1)]
 
 
-# -------------------------------------------------------------- 1b. the real Scheduler (stub)
 
 
 @pytest.fixture
@@ -278,7 +269,6 @@ def test_release_under_read_is_decidable_from_the_lines(S, overlap):
         S.close(p, d)
 
 
-# --------------------------------------------------------------- 2. P entry pages per outcome
 D_PEER = 0xD7
 LAY_P = [2, 1, 1, 2, 4, 17, 2 << 40, L.DTYPE_CODES["float32"], 7]  # as test_kargs.lay
 LAY_D = [2, 1, 1, 2, 4, 17, 1 << 40, L.DTYPE_CODES["float32"], 7]
@@ -342,8 +332,7 @@ def test_entry_ack(monkeypatch, pdt):
 
 
 def test_entry_fail_unstopped_quarantines_and_later_abort_sees_it(monkeypatch, pdt):
-    """failed-write-not-drained (failedAsDrained) is decidable from this line: a failed write's source pages
-    must be quarantined after p_done(False), never draining or free."""
+    """A failed write must leave its source pages quarantined in the recorded post-state."""
     t, g, src = _p(monkeypatch)
     eid = _post(t, g)
     assert t.p_begin(eid)
@@ -415,7 +404,6 @@ def test_entry_lines_on_the_toy_failure_path(nodes, pdt):
     assert ok["pages"] == post["pages"]  # the same pages the post line registered
 
 
-# ----------------------------------------------------------------- 3. StepLineHandler
 class _Stream(io.StringIO):
     def __init__(self):
         super().__init__()

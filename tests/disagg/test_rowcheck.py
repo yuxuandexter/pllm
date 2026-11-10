@@ -1,24 +1,12 @@
-"""Red team page-table row check (page-table row ownership): the page-table row a step reads must be the ledger's slots.
+"""Page-table backends must use slots owned by the current request.
 
-The attention / KV-store kernels read and write KV through ``page_table[row, 0:device_len]``;
-the ledger only knew gens and pages.  ``LedgerCacheManager.check_rows`` (called by
-``PDHooks.launch`` before every step on P and D, default on) compares every column with
-``ledger.token_slots(gen, 0, device_len)`` and raises ``LedgerViolation`` on any difference.
+Compare every used column with the ledger, including previously checked columns
+that may have changed. Corrupt partial mappings or swap rows at handoff: the
+check must stop decode before a kernel reads them. Without the check, these
+faults can corrupt output while transferred KV checksums still pass.
 
-1. unit tests on ``LedgerCacheManager``: the glue's own mapping passes; each kind of wrong row is
-   refused (stale tail, swapped rows, a verified column overwritten later, another gen's slot);
-   the cached shadow equals the ledger's answer; the benchmark switch turns it off.
-2. the red team's mutants MSLOT and MROW (``the slot and row corruption fixtures``), applied
-   to ``PDHooks._commit_ready`` by the same textual edit, on the real Scheduler + stub engine:
-   the row check stops D at its first decode step; with the check off the same run ends with
-   wrong outputs while every KV checksum passes (the red team's observation).  A P-side
-   mutant (prefill mapping in reverse page order) is caught on P the same way.
-
-KernelReadPins: the kernels now take the ledger core's arrays (``k_launch``), so on that path the same
-mutants are harmless (the page table is not read); the row check is a debug cross-check
-(``--disaggregation-row-check on``) and stays on by default only for attention backends that
-still read the page table (stub ``kread=False``, where the page-table row check gap is shown again).
-"""
+Backends that consume ledger arrays directly are unaffected by a bad page table.
+Debug mode still checks both views; auto mode checks only page-table backends."""
 
 from __future__ import annotations
 
@@ -62,7 +50,6 @@ def grow(cache, row: int, n: int, step: int):
     cache.check_rows(step, [(row, gen, n)])
 
 
-# ------------------------------------------------------------------------------- unit
 @pytest.mark.parametrize("ps", [1, 4])
 def test_glue_mapping_passes_and_shadow_equals_ledger(ps):
     led, cache = mkcache(ps)
@@ -142,7 +129,6 @@ def test_row_check_switch_off_for_benchmarks():
     assert cache.row_stats["row_check"] == 0 and cache.row_stats["row_checks"] == 0
 
 
-# ------------------------------------------------------------------------------- red mutants
 WRITE = "self.cache.write_rows(row, gen, len(self.ledger.pages_of(gen)))"
 MROW_BLOCK = [  # row corruption fixture, re-indented
     '_red = getattr(self, "_red_prev", None)',
@@ -157,8 +143,9 @@ MROW_BLOCK = [  # row corruption fixture, re-indented
 
 
 def red_commit_ready(kind: str):
-    """``PDHooks._commit_ready`` with the red team's edit (same lines as mut_MSLOT.sh /
-    mut_MROW.sh).  Fails if the mutation point moved, so the test cannot pass vacuously."""
+    """Corrupt the handoff mapping at its real write site.
+
+    Fail if the mutation point moved, so an unapplied mutation cannot pass."""
     src = textwrap.dedent(inspect.getsource(SPD.PDHooks._commit_ready))
     assert "_red_prev" not in src and "token_slots(gen, 0, n)" not in src, \
         "_commit_ready already carries a red team mutant (applying it twice would undo MROW)"
@@ -194,7 +181,7 @@ def _run12(ps: int, row_check, p_mutant=None, kread: bool = True):
 
 @pytest.mark.parametrize("kind,ps", [("MSLOT", 4), ("MROW", 1), ("MROW", 4)])
 def test_red_mutant_is_caught_by_the_row_check(monkeypatch, kind, ps):
-    """Debug cross-check (--disaggregation-row-check on): the 06b6baf check still stops D."""
+    """Debug mode must detect the corrupt row before decode runs."""
     monkeypatch.setattr(SPD.PDHooks, "_commit_ready", red_commit_ready(kind))
     p, d = _run12(ps, row_check=True)
     try:
@@ -207,9 +194,10 @@ def test_red_mutant_is_caught_by_the_row_check(monkeypatch, kind, ps):
 
 @pytest.mark.parametrize("kind,ps", [("MSLOT", 4), ("MROW", 1), ("MROW", 4)])
 def test_red_mutant_without_the_row_check_passes_every_other_gate(monkeypatch, kind, ps):
-    """What page-table row check showed, for an attention backend that still reads the page table (kread=False:
-    06b6baf, trtllm, fa) with the check switched off: the KV checksums, the ledger scans and
-    quiescence all pass while the outputs are wrong.  This is the gap the row check closes."""
+    """KV checksums cannot detect a page-table backend reading the wrong slots.
+
+    With row checks off, output is wrong even though checksums, ledger scans,
+    and quiescent accounting pass."""
     ref = reference(PROMPTS, 6, ps)
     monkeypatch.setattr(SPD.PDHooks, "_commit_ready", red_commit_ready(kind))
     p, d = _run12(ps, row_check=False, kread=False)
@@ -228,10 +216,10 @@ def test_red_mutant_without_the_row_check_passes_every_other_gate(monkeypatch, k
 
 @pytest.mark.parametrize("kind,ps", [("MSLOT", 4), ("MROW", 1), ("MROW", 4)])
 def test_red_mutant_is_harmless_on_the_core_path(monkeypatch, kind, ps):
-    """KernelReadPins: the kernels take the ledger core's arrays (k_launch), so a wrong page-table row is
-    never read or written: same mutants, row check in its default (auto = off for a backend that
-    takes the core's arrays), every output equals the colocated reference.  The stub still sees
-    the page table differ from the core's arrays (kargs_diff > 0): the mutant is live."""
+    """Ledger-array backends must ignore corruption confined to the page table.
+
+    Output still matches the colocated reference with auto checks off. A
+    nonzero kargs_diff confirms that the mutation changed the unused table."""
     ref = reference(PROMPTS, 6, ps)
     monkeypatch.setattr(SPD.PDHooks, "_commit_ready", red_commit_ready(kind))
     p, d = _run12(ps, row_check="auto")
@@ -248,7 +236,7 @@ def test_red_mutant_is_harmless_on_the_core_path(monkeypatch, kind, ps):
 
 
 def test_mslot_at_page_1_is_not_a_violation(monkeypatch):
-    """At page 1 MSLOT maps exactly the slots the glue maps (no partial page): no false alarm."""
+    """Whole-page mapping at page size one must not trigger a false alarm."""
     ref = reference(PROMPTS, 6, 1)
     monkeypatch.setattr(SPD.PDHooks, "_commit_ready", red_commit_ready("MSLOT"))
     p, d = _run12(1, row_check=True)

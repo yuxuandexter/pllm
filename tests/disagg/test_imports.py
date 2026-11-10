@@ -65,7 +65,7 @@ def test_args_parse_pd_flags(tmp_path):
 
 
 def test_gpu_flush_on_by_default(tmp_path):
-    """the contract: the D side flushes GPUDirect RDMA writes before recording a landing by default."""
+    """Decode flushes GPUDirect writes before recording a landing by default."""
     pytest.importorskip("torch")
     import json
 
@@ -96,7 +96,7 @@ def _tiny_model(tmp_path):
 
 
 def test_ack_timeout_flag(tmp_path):
-    """Red team ACK deadline quarantine: D's ACK timeout is a server flag (was only a constructor argument)."""
+    """The server flag must reach the decode abort timeout."""
     pytest.importorskip("torch")
     from minisgl.server.args import parse_args
 
@@ -110,8 +110,7 @@ def test_ack_timeout_flag(tmp_path):
 
 
 def test_row_check_flag(tmp_path):
-    """page-table row check row check after KernelReadPins: auto by default (on only for attention backends that still read
-    the page table), 'on' = debug cross-check, 'off' / the 06b6baf --disable-... = off."""
+    """Keep auto, on, off, and the disable alias consistent in the parsed config."""
     pytest.importorskip("torch")
     from minisgl.server.args import parse_args
 

@@ -1,9 +1,8 @@
-"""bf8d794 CPU trace -> fixed PdCore 05e988a5. Legacy extract/lifecycle are unchanged.
+"""Map observed CPU records to the fixed trace model.
 
-Uses the calibrated lifecycle extractor only on a compatibility COPY of raw lines.
-The original four-field items and explicit allocations drive observe and the
-new DGrow/W/prefix events. No fallback to learning a page from a kernel endpoint.
-"""
+Give the legacy extractor a compatibility copy. Keep original four-field items
+and explicit allocations for independent growth, write, and prefix checks.
+Never infer an allocated page from a kernel argument endpoint."""
 from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict

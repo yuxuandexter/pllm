@@ -1,65 +1,33 @@
-"""Trace log points for trace validation against PdCore (the CPU control-plane checks).
+"""Capture ledger calls in state-change order for PdCore trace checks.
 
-``TracedLedger`` wraps any ``Ledger`` (the Python reference or the Rust core): it forwards
-every call unchanged and, for the ledger calls the trace needs, writes one ``PDT`` line:
+TracedLedger forwards calls unchanged. A process-wide lock covers each call and
+its PDT record, so the sequence number orders scheduler and worker mutations.
+Request records retain instance, room, generation, and transfer identities.
+Page lists use ordered run-length encoding; optional pre/post queries record
+page-state counts without exposing mutable ledger state.
 
-    PDT {"k": "call", "seq": 17, "inst": "0x1a2b...", "side": "D", "m": "d_landed",
-         "ev": "evidence", "rid": "...", "room": 5, "h": 3, "xid": 2, "eid": -1, "d_h": -1,
-         "peer": "0x...", "a": [...], "res": 0, "pages": [[40, 3]], "pre": {"private": 3},
-         "post": {"private": 3}, ...}
+Launch and completion records make each kernel step observable, including later
+launches of the same request. A request's final prefill completion points to its
+kdone sequence. MINISGL_PD_TRACE_STEPS=0 omits step records, leaving completion
+gaps that legacy extraction must infer. Source-entry records retain their held
+pages so failed transfers can be distinguished from completed ones.
 
-Every line carries the emitting instance ``inst``, ``rid``, ``room``, its own ``h`` (ledger gen),
-``xid`` (D's transfer id; on P the D xid it pushes to), ``eid`` and ``d_h`` (P only, else -1),
-``peer``, and ``seq``: a per-process sequence number taken under one process-wide lock that is
-held across the ledger call itself, so ``seq`` order is the order of the ledger state changes
-even with P's transfer worker thread and the scheduler thread calling at once (and the lines
-are written in that order too).  ``pages`` are run-length encoded ``[[first, count], ...]``;
-``pre`` / ``post`` count the states of those pages before / after the call (needs the optional
-``page_states`` query; the Rust core may omit it, then they are absent).  The schema follows
-trace conformance's ``trace_shim.py`` events (k = call / role / flush / match / router) so its extractor
-can read these lines instead of the shim.
+Servers buffer step lines and flush them with the next non-step record, at the
+line or age limit, on scheduler idle, and at exit. File order stays sequence
+order. Abrupt termination can lose the buffered tail.
 
-Lines (``ev``): ``alloc`` (P only: uid <-> h), ``publish`` (d_expect, exposed pages),
-``flush`` (one per xid), ``evidence`` (every d_landed / d_stopped / d_unstopped result,
-including late evidence and drops), ``visible``, ``release`` (why=finish|abort|failed, page
-states after), ``read`` (first launch per request), ``complete`` (P: the last prefill step of a
-request, written when the request posts or releases, with the seq it had), ``post``,
-``begin``, ``done`` (every p_done result), ``abort`` (every p_abort: entry state and why),
-``peer_lost`` (affected xids / eids), ``peer``, ``match``, ``role``; the router writes
-``router`` (outcome per request).  ``begin`` / ``done`` / ``abort`` (KernelReadPins compatibility) carry the
-entry's source pages (``pages``, recorded at its p_post; ``[]`` when the entry holds none: never
-posted, or already finished) and their ``pre`` / ``post`` state counts, like the D lines.
+A rejected call records the API, original arguments, exception, and available
+before/after observations, then re-raises the exception. Rejection does not
+imply rollback: a postcondition failure may follow a state change. No success
+record or success-context update is made for that call.
 
-Per-step lines (KernelReadPins compatibility, ``k = "step"``, no per-request fields): every ``launch`` /
-``k_launch`` writes ``{"k":"step","ev":"klaunch","inst","side","step","it":[[row, gen], ...],
-"npad","seq"}`` (``it`` in batch order; row -1 when the call gave no rows) before that call's
-``read`` lines, and every ``complete`` / ``step_done`` writes ``{"k":"step","ev":"kdone","inst",
-"side","step","seq"}``, P and D.  So no ledger call consumes a seq without a line (the P
-``complete`` seq holes of untraced completion are gone: ``at_seq`` of a ``complete`` line is the seq of its
-``kdone`` line).  ``MINISGL_PD_TRACE_STEPS=0`` drops the step lines only (then P's complete
-leaves its seq hole again, as before).  In a server process (``hold_step_lines``) step lines are
-not written one by one: they are held and written together with the next other PDT line in one
-write, or after ``STEP_HOLD_LINES`` lines / ``STEP_HOLD_S`` seconds, when the scheduler idles,
-and at exit, so file order stays seq order.
+Descriptor capture observes layouts, registration, plans, and final engine
+arguments independently. Submission is an attempt, not completion evidence.
+MINISGL_PD_TRACE_DDESC=0 omits these fields and restores the legacy record format.
+Captured arrays preserve integer values and order. Digests and capture hooks
+remain trusted boundaries.
 
-Refused calls: one ``k = ev = "rejected"`` record, actual API ``m``, complete
-pre-call ``args`` / ``kwargs``, legacy ``a`` encoding, exception / message / guard /
-phase, and available identity/page observations. The original LedgerViolation is
-re-raised. "rejected" means the API raised, NOT that it rolled back: a postcondition
-failure may have changed state. No success record or success-context update occurs.
-Rejected-call extraction checks the captured before and after states.
-
-Descriptor capture (descriptor-capture): ``MINISGL_PD_TRACE_DDESC=0`` disables the additive
-``ddesc_v=1`` observations and restores the old PDT bytes/sequence. When enabled,
-role/peer/post gain independent layout/input/registered-entry snapshots; ``ddesc``
-records the actual D return, ``ddesc_recv`` records wire/binding dispositions,
-``xfer_plan`` records actual return arrays, and ``xfer_submit``/``xfer_result``
-observe backend and final TransferEngine call boundaries. Submit means attempt,
-not completion. Layout/address arrays retain exact JSON integers and list order.
-
-Always on at INFO (``MINISGL_PD_TRACE=0`` turns it off): trace validation needs these lines from
-every GPU run; they cost a few lines per request plus two per step.
-"""
+Tracing is enabled at INFO by default; MINISGL_PD_TRACE=0 disables it."""
 
 from __future__ import annotations
 
@@ -157,10 +125,10 @@ def transfer_call(boundary, call, session, srcs, dsts, lens):
 
 
 def kargs_summary(ip, qo, indices, out_loc, nb: int, source: str) -> Dict:
-    """argument capture/argument capture additive fields from observed arrays (not recomputed ledger arguments).
-    Digest is an order-sensitive diagnostic checksum, NOT a collision-free proof.
-    Inputs are host arrays; PDHooks owns any device synchronization. See the argument capture fields.
-    """
+    """Summarize observed arrays independently of the ledger's argument builder.
+
+    The order-sensitive digest can collide; it is a diagnostic, not a proof.
+    Inputs are host arrays. PDHooks owns any device synchronization."""
     ip, qo = list(map(int, ip)), list(map(int, qo))
     nr = len(ip) - 1
     if (len(qo) != len(ip) or not 0 <= nb <= nr or not ip or ip[0] or qo[0]
@@ -315,13 +283,13 @@ class TracedLedger:
         self.inst = inst
         self.side = side
         self._tl = threading.local()
-        self.gen_ctx = _Ctx()  # gen -> {rid, room, uid}
-        self.eid_ctx = _Ctx()  # P: eid -> {h, d_h, xid, room, peer}
-        self.eid_of = _Ctx()  # P: (peer, xid) -> eid
+        self.gen_ctx = _Ctx()
+        self.eid_ctx = _Ctx()
+        self.eid_of = _Ctx()
         self.read_seen = _Ctx()  # gens whose first launch was traced
-        self.last_complete: Dict[int, Tuple[int, int]] = {}  # P: gen -> (seq, step)
-        # P: step -> gens it covers, kept here (not read from the ledger's internals) so that
-        # the complete line is written for any Ledger implementation (the Rust one has no .steps)
+        self.last_complete: Dict[int, Tuple[int, int]] = {}
+        # Track completion sequences independently so any Ledger implementation can
+        # emit final prefill completion without exposing its step records.
         self._step_gens: Dict[int, List[int]] = {}
         self._ps = getattr(inner, "page_size", 1)
         self.defer_kargs = False  # PDHooks observes the staged metadata before assigning seq
@@ -330,7 +298,6 @@ class TracedLedger:
         self._ddesc_layout = (deepcopy(getattr(inner, "layout", None))
                               if ENABLED and DDESC else None)
 
-    # -- passthrough for everything not traced (stats, check, d_xfer, internals in tests) --
     def __getattr__(self, name):
         value = getattr(self.inner, name)
         if callable(value) and not name.startswith("_"):
@@ -338,7 +305,7 @@ class TracedLedger:
         return value
 
     def prefix_guard(self):
-        # Same order as _traced: trace -> ledger, including calls from the P worker.
+        # Acquire the trace lock before the ledger lock, including in the transfer worker.
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(_LOCK)
@@ -349,7 +316,6 @@ class TracedLedger:
             raise
         return stack
 
-    # -- context ---------------------------------------------------------------------------
     def bind(self, gen: int, **ctx) -> None:
         cur = dict(self.gen_ctx.get(gen, {}))
         cur.update({k: v for k, v in ctx.items() if v is not None})
@@ -399,7 +365,6 @@ class TracedLedger:
         finally:
             _XFER_CONTEXT.reset(token)
 
-    # -- helpers ---------------------------------------------------------------------------
     def _states(self, pages: List[int]) -> Dict[str, int] | None:
         q = getattr(self.inner, "page_states", None)
         if q is None or not pages:
@@ -582,7 +547,6 @@ class TracedLedger:
                 write(rec)
         return res
 
-    # -- the traced Ledger methods -------------------------------------------------------------
     def register_peer(self, peer: int, layout: List[int]) -> int:
         def b(phase, res, c):
             if phase == "pre":
@@ -612,8 +576,7 @@ class TracedLedger:
             self.bind(gen, prefix_tokens=list(prefix_tokens))
             return gen
 
-    # PrefixSharing ledger events only. PdTrace extraction of these events is a separate trace conformance
-    # deliverable; forwarding and recording do not assert model acceptance.
+    # Recording prefix events alone does not establish model acceptance.
     def _prefix(self, method: str, args, gen: int = -1):
         def b(phase, res, c):
             if phase == "pre":
@@ -724,7 +687,7 @@ class TracedLedger:
         return self._launch(lambda: self._call("k_launch", (step, items, npad), {"rows": rows}), step,
                             items, {"kargs": 1}, rows, npad)
 
-    # KernelReadPins compatibility: the row binding is forwarded unchanged (no trace line of its own; the row of
+    # the row binding is forwarded unchanged (no trace line of its own; the row of
     # each item appears on its first read line and on every klaunch line of its steps)
     def bind_row(self, row: int, gen: int) -> None:
         return self._call("bind_row", (row, gen,))
@@ -743,7 +706,7 @@ class TracedLedger:
                 self._step_gens[step] = [it[0] for it in items]
             rec = None
             if STEP_LINES:
-                # PdCore[05e988a5] KLaunch:1259. Preserve row first; include every
+                # PdCore KLaunch. Preserve row first; include every
                 # item's generation AND read/write bounds (not just the first read).
                 it = [[-1 if rows is None else rows[j], *items[j]] for j in range(len(items))]
                 rec = {"k": "step", "ev": "klaunch", "inst": hex(self.inst), "side": self.side,
@@ -917,7 +880,7 @@ class TracedLedger:
 
     def p_expose(self, gen: int, ntokens: int, peer: int, peer_room: int, peer_gen: int,
                  peer_xid: int, dst_pages: List[int], *, dst_descriptor: tuple) -> tuple:
-        # PdCore[05e988a5] PExpose:612: the only emitted publication is after source
+        # PdCore PExpose: the only emitted publication is after source
         # holds and noncancellability have committed together in the inner ledger.
         args = (gen, ntokens, peer, peer_room, peer_gen, peer_xid, dst_pages)
         def b(phase, res, c):
@@ -983,8 +946,8 @@ class TracedLedger:
         def b(phase, res, c):
             if phase == "pre":
                 return self._entry_pre(eid)
-            # A successful cancellation has exactly p_abort's POSTED -> CANCELLED effect.
-            # Keep that existing trace vocabulary for PCancelReg; retain the actual API in via.
+            # Successful cancellation uses the same trace event as cancelling a posted entry.
+            # Keep PCancelReg's event vocabulary and record the actual API in via.
             e = self.eid_ctx.get(eid, {})
             out = ([self._entry_rec("p_abort", "abort", [e.get("peer", 0), e.get("xid", -1)],
                                    L.SEND_ACK, eid, pages=c["_src"], pre=c["_pre"],

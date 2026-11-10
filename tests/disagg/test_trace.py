@@ -1,4 +1,4 @@
-"""compatibility: trace log points (the CPU control-plane checks) - format and content, CPU."""
+"""CPU trace checks preserve record format, identity, and lifecycle evidence."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def _success_path(nodes, recs):
 
 
 def test_two_decoders_are_told_apart(nodes, recs):
-    """The 1P2D finding: two D's printed identical 'uid=1 room=5 h=1 xid=1' lines."""
+    """Instance IDs must distinguish identical local IDs from two decode servers."""
     p, (d1, d2) = nodes(n_d=2)
     for d, room in ((d1, 5), (d2, 6)):
         p.submit(room, [room, 1])
@@ -199,7 +199,7 @@ def test_peer_lost_lists_the_xids(nodes, recs):
 def test_p_abort_reasons_at_call_sites(nodes, recs):
     p, (d,) = nodes()
     p.submit(3, [1, 2, 3])
-    uid = d.submit(3, [1, 2, 4], p.port, 2)  # prompt mismatch -> P refuses
+    uid = d.submit(3, [1, 2, 4], p.port, 2)  # A prompt mismatch must be refused before transfer.
     assert run_until(lambda: uid in d.failed, [p, d])
     ab = of(recs(), ev="abort", inst=hex(p.inst))
     assert ab and ab[0]["why"] == "mismatch" and ab[0]["entry"] == "none"

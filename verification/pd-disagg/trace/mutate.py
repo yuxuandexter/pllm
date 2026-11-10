@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small CPU source-mutation gate derived from the original PdLedger mutation runner."""
+"""Use source mutations to check whether CPU tests detect broken ledger behavior."""
 import argparse
 import ast
 import hashlib
@@ -12,7 +12,6 @@ import signal
 import subprocess
 import sys
 
-# Existing mutations, not new implementation-specific test assertions.
 MUTANTS = {
     'timeoutFrees': ('_quarantine_xfer', 'self._quarantine(p, reason, x.peer)',
                     'self.pst[p] = FREE\n                self.pown[p] = 0\n                self.free.append(p)'),

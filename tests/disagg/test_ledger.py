@@ -35,7 +35,6 @@ def prefill_on_p(p: RefLedger, ntok: int, step: int) -> int:
     return g
 
 
-# ------------------------------------------------------------------------------- basics
 def test_alloc_release_roundtrip():
     d = mk()
     g = d.open_req(5)
@@ -87,7 +86,6 @@ def test_launch_after_launched_step_is_stream_ordered():
         d.complete(3)
 
 
-# ------------------------------------------------------------------------------- D side
 def test_d_happy_path():
     p, d = pair()
     g = d.open_req(42)
@@ -164,7 +162,7 @@ def test_d_unstopped_quarantines_forever(reason):
     st = d.stats()
     assert st["quarantined"] == 2 and d.free_pages() == 14
     assert st["quarantined_" + L.Q_REASON_NAMES[reason]] == 2
-    # late evidence does not bring them back (lifecycle contract step-1 rule)
+    # late evidence does not bring them back
     assert d.d_landed(P_INST, 7, g, xid, 2) < 0
     assert d.d_stopped(P_INST, 7, g, xid) < 0
     got = []
@@ -191,7 +189,6 @@ def test_layout_mismatch_rejected():
     assert d.register_peer(5, [2, PS, 2, 8, 2, 17, 0, BF16, MODEL]) == L.REJ_LAYOUT
 
 
-# ------------------------------------------------------------------------------- P side
 def test_p_happy_path_holds_source_until_done():
     p, d = pair()
     gp = prefill_on_p(p, 3, 1)
@@ -272,13 +269,12 @@ def test_p_peer_lost_cancels_posted():
 
 def test_plan_merges_contiguous_runs():
     srcs, dsts, lens = L.plan_copy(LAYOUT_P, [1, 2, 3, 9], LAYOUT_D, [4, 5, 6, 7])
-    assert len(srcs) == 2 * 2 * 2  # two runs: (1..3 -> 4..6), (9 -> 7)
+    assert len(srcs) == 2 * 2 * 2  # Coalesce source pages 1 through 3 into destination pages 4 through 6; copy page 9 separately.
     pb = PS * 2 * 4 * 2
     assert lens[:2] == [3 * pb, pb]
     assert srcs[2] == L.page_addr(LAYOUT_P, 0, 1, 1)
 
 
-# ------------------------------------------------------------------------------- randomized
 class World:
     """P and D ledgers plus a simulated network and RDMA engine.
 
@@ -301,17 +297,15 @@ class World:
         self.pstep = self.dstep = 0
         self.pdone = self.ddone = 0
         self.pending_writes = []  # (src_page, dst_page) not yet landed
-        self.to_p = []  # messages D -> P
-        self.to_d = []  # messages P -> D
+        self.to_p = []
+        self.to_d = []
         self.room = 0
-        # D-side requests: room -> dict
         self.dreq = {}
-        self.preq = {}  # room -> (gen_p, ntok)
+        self.preq = {}
         self.engine = []  # eids submitted to the engine and not returned
         self.lost = False
         self.posted = []  # P entries registered but not yet handed to the engine
 
-    # -- helpers
     def land_some(self):
         keep = []
         for sp, dp in self.pending_writes:
@@ -618,13 +612,12 @@ def test_randomized_world_covers_paths():
     assert decodes > 100
 
 
-# ------------------------------------------------------------------------------- mutants
 # Each mutant reintroduces one known bug class; the behavioural oracle of the randomized world
 # (KV tags read by decode steps, conservation at quiescence) must catch it with the ledger's own
 # invariant scan switched off (check_every=0), i.e. the tests observe behaviour, not internals.
 
 
-def _mut_free_while_busy(self, p):  # W: page reused while an access is in flight
+def _mut_free_while_busy(self, p):  # Reproduce reuse while an access remains in flight.
     if self.pst[p] == L.DRAINING:
         self.pst[p] = L.FREE
         self.pown[p] = 0
@@ -633,7 +626,7 @@ def _mut_free_while_busy(self, p):  # W: page reused while an access is in fligh
     return False
 
 
-def _mut_timeout_frees(self, xid, reason):  # ResourceReclamation/W: timeout treated as "stopped"
+def _mut_timeout_frees(self, xid, reason):  # Reproduce a timeout incorrectly treated as stop evidence.
     x = self.xfers.get(xid)
     if x is None or x.state != L.X_POSTED:
         return L.DROP_STATE
@@ -644,7 +637,7 @@ def _mut_timeout_frees(self, xid, reason):  # ResourceReclamation/W: timeout tre
     return L.OK
 
 
-def _mut_release_frees_busy(self, gen):  # W: release ignores in-flight accesses entirely
+def _mut_release_frees_busy(self, gen):  # Reproduce release that ignores all in-flight accesses.
     r = self.reqs[gen]
     r.state = L.R_RELEASED
     for p in r.pages:
@@ -689,17 +682,15 @@ def test_token_slots_are_ledger_computed():
 
 def test_reference_implements_the_whole_interface():
     names = [n for n, v in vars(L.Ledger).items() if callable(v) and not n.startswith("_")]
-    assert len(names) == 36  # previous 35 + atomic PrefixSharing source exposure (the contract)
+    assert len(names) == 36
     for n in names:
         assert callable(getattr(RefLedger, n, None)), n
 
 
-# ------------------------------------------------------------------------------- compatibility (Z3)
 def test_dummy_page_ledger_never_owns_the_dummy_page():
-    """Z3 dummy-page isolation: pool_pages includes mini-sglang's dummy page; the ledger may own at most
-    pool_pages - 1 pages (p_post already refuses the dummy page as a destination)."""
+    """The dummy page belongs to graph padding and must never be allocated by the ledger."""
     with pytest.raises(LedgerViolation):
-        RefLedger(17, LAYOUT_D, D_INST)  # pool_pages = 17 -> at most 16
+        RefLedger(17, LAYOUT_D, D_INST)
     assert RefLedger(16, LAYOUT_D, D_INST).free_pages() == 16
 
 

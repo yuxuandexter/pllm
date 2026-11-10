@@ -220,7 +220,7 @@ def test_layout_mismatch_refuses_handshake(cluster):
     assert "handshake refused" in d.failed[uid]
 
 
-# layout agreement negative test over the real handshake (compatibility): P and D that differ in page_size,
+# layout agreement negative test over the real handshake: P and D that differ in page_size,
 # KV dtype (same itemsize), KV head count, layer count or model identity must refuse to pair,
 # in either direction, before any byte moves.
 @pytest.mark.parametrize("side", ["d", "p"])
@@ -237,7 +237,7 @@ def test_ct_layout_mismatch_refused(cluster, field, side):
         idx = L.LAYOUT_FIELDS.index(field)
         node = d if side == "d" else p
         node.pd.layout = list(node.pd.layout)
-        if field == "dtype":  # fp8 e4m3 -> e5m2: itemsize stays 1 (the Z3 layout identity counterexample)
+        if field == "dtype":  # Equal item sizes cannot distinguish the two FP8 formats.
             node.pd.layout[idx] = L.DTYPE_CODES["float8_e5m2"]
         else:
             node.pd.layout[idx] += 1
