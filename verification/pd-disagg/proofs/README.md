@@ -40,61 +40,49 @@ comments and whitespace.
 
 ## Reproduce or sample
 
-Static checks need Bash and Python 3.9+. Proof runs also need a TLAPS installation
-with its standard library, Z3, Zenon, Isabelle and temporal backend.
-The recorded tools are TLAPM (version output `efe4f2d-dirty`, binary SHA256
-`32812a0fd9e9944c00f6f0135bae62563500dbd32c87969ed1aadd97cbbf91b5`),
-Z3 4.8.9 (binary SHA256
-`56e1b909c7462653471012478f317143c8eb77a3cea085d6ad5422084d8d63e5`),
-Zenon 0.8.4 [a268], and Isabelle2025. `SUMMARY.tsv` records tool and library hashes
-once, plus each module's source hash, import closure hash, obligation count and
-stretch multiplier.
+Run `./verify.sh` from this directory with Bash and Python 3.9+. Proof modes also
+need TLAPS with Z3, Zenon, Isabelle and the temporal backend; add
+`--tlapm "$TLAPS/bin/tlapm" --out NEW_DIRECTORY`, where `TLAPS` is your installation
+prefix. `SUMMARY.tsv` records the tool/library hashes and per-module counts.
 
-Run from this directory. `TLAPS` below is your installation prefix.
+| Mode | Purpose and cost |
+|---|---|
+| `--static` | Check pinned inputs, proof structure and coverage in seconds; no TLAPS needed. |
+| `--module NAME` | Recheck one complete module with TLAPS; seconds to hours depending on the module. |
+| `--sample N --seed S` | Recheck N uniformly sampled modules with TLAPS; cost depends on the sample. |
+| `--all` | Recheck all 226 modules sequentially with TLAPS; allow several days. |
+| `--all --jobs J --slice-large` | Run modules concurrently and split large proofs with TLAPS; see the resource estimate below. |
 
-```bash
-./verify.sh --static
-./verify.sh --module PdABBQBase --tlapm "$TLAPS/bin/tlapm" --out review-one
-./verify.sh --sample 5 --seed 42 --tlapm "$TLAPS/bin/tlapm" --out review-sample
-./verify.sh --all --tlapm "$TLAPS/bin/tlapm" --out review-all
-```
+Recommended review order:
 
-Each proof run first repeats the static checks. It copies the sources into a new
-output directory, uses a fresh cache with `--nofp`, and checks every obligation's
-final status and the exact count. Only `proved` or `trivial` succeeds. An incomplete
-run or timeout fails. Commands, raw logs and results remain in the output directory.
-The output reports whether the tools match the recorded hashes; add
-`--require-toolchain` to require that exact build. Other platforms can use their
-own TLAPS build for independent checking.
+1. Run `./verify.sh --static`.
+2. Choose your own seed and run `--sample N --seed S` (for example, `--sample 5 --seed 42`).
+3. With enough compute, run `--all --jobs J --slice-large`.
 
-The native whole-module command is:
+Estimated full-run work is **222–316 CPU core-hours**: ideally **14–20 / 7–10 /
+3.5–5 hours on 16 / 32 / 64 cores**, subject to memory and scheduling limits.
+`--jobs` caps concurrent processes; `--threads` defaults to 1 per process.
+Admission reserves 16 GiB per job by default, within `--memory-budget-gib` (default
+160 GiB); adjust these estimates with `--job-memory-gib` and `--memory-budget-gib`
+to fit the machine. Recorded large whole-module runs used limits up to 48 GiB
+per process. These reservations are scheduling estimates, not hard memory limits.
 
-```bash
-tlapm --strict --threads 1 -I "$TLAPS/lib/tlapm/stdlib" -I "$SRC" \
-  --nofp --stretch "$STRETCH" --toolbox 0 0 "$SRC/$MODULE.tla"
-```
+Every slice reads the complete original module. The native whole-module `-N`
+inventory is the sole authority for reconciliation. Each slice's proved source
+location multiset must exactly match its assigned inventory, and their sum must
+exactly equal the whole inventory; any failed slice fails the run. Cuts occur
+only between top-level theorems or level-one proof steps.
 
-`SRC` is the copied source directory. `STRETCH` comes from the module's summary
-(12, 24 or 30). `verify.sh` sets the backend search path and `TLAPM_CACHE_DIR`.
-For a module recorded as sharded, `--module NAME --shards` first obtains the whole
-inventory, then runs each inclusive line range from `SUMMARY.tsv`:
+Every proof run repeats static checks, copies the sources, uses `--strict --nofp`,
+and retains commands, raw logs and results. Only `proved` or `trivial` succeeds;
+timeouts and incomplete runs fail. Slicing requires the recorded tool/library
+hashes; whole-module checking permits other TLAPS builds unless
+`--require-toolchain` is set. `--timeout` defaults to 18,000 seconds per invocation;
+`--stretch` overrides the recorded backend timeout multiplier. Subset success is
+reported separately from a full-tree pass.
 
-```bash
-tlapm --strict --threads 1 -I "$TLAPS/lib/tlapm/stdlib" -I "$SRC" \
-  --nofp --stretch "$STRETCH" -N --toolbox 0 0 "$SRC/$MODULE.tla"
-tlapm --strict --threads 1 -I "$TLAPS/lib/tlapm/stdlib" -I "$SRC" \
-  --nofp --stretch "$STRETCH" --toolbox "$START" "$END" "$SRC/$MODULE.tla"
-```
-
-The `-N` invocation supplies only the inventory. The proved shards must match its
-source-location multiset exactly, including repeated locations. This release has
-no sharded modules.
-
-Start with one proof worker and 16 GiB RAM for small modules. Recorded large-module
-runs used up to 48 GiB per process. A fresh full run can take many hours. Use
-`--threads`, `--timeout` (default 18,000 seconds per invocation) and `--stretch`
-to adjust execution budgets. Isabelle's heap can be set with `TLAPM_POLY_OPTIONS`;
-the default is 6 GiB. All modules run sequentially.
+**All results in this release come from whole-module runs.** Slicing is an
+optional way to accelerate independent review.
 
 ## Results
 

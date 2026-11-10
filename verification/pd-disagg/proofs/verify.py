@@ -516,6 +516,13 @@ def prove(args, summary):
     return results
 
 
+def static_input_lock():
+    paths = [HERE / 'SUMMARY.tsv', HERE / 'coverage.tsv', HERE / 'model-renames.tsv',
+             HERE / 'source/SHA256SUMS', *sorted((HERE / 'source').glob('*.tla')),
+             *sorted((HERE.parent / 'spec').glob('*.tla'))]
+    return {str(p): sha(p) for p in paths}
+
+
 def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt
@@ -535,13 +542,24 @@ def main():
     p.add_argument('--stretch', type=float, help='override recorded timeout multiplier')
     p.add_argument('--timeout', type=float, default=18000, help='wall seconds per invocation; expiry is failure')
     p.add_argument('--out', help='new directory for proof runs, logs and process records')
+    from slicing import add_arguments, validate_args
+    add_arguments(p)
     args = p.parse_args()
+    validate_args(args)
     require(args.threads > 0 and args.timeout > 0 and (args.stretch is None or args.stretch > 0), 'positive resource parameters required')
-    require(not args.shards or args.module or args.sample or args.all, '--shards requires a module selection')
+    require(not (args.shards or args.slice_large or args.jobs != 1) or args.module or args.sample or args.all, 'parallel/slice mode requires a module selection')
+    args.started_monotonic = time.monotonic()
+    args.static_lock = static_input_lock()
     summary, result = static_checks()
+    require(static_input_lock() == args.static_lock, 'inputs changed during static check')
+    args.static_seconds = time.monotonic() - args.started_monotonic
     print(json.dumps(dict(static='PASS', **result), indent=2), flush=True)
     if args.module or args.sample is not None or args.all:
-        prove(args, summary)
+        if args.slice_large or args.jobs != 1:
+            from slicing import prove as parallel_prove
+            parallel_prove(args, summary)
+        else:
+            prove(args, summary)
 
 
 if __name__ == '__main__':
