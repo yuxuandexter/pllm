@@ -323,15 +323,22 @@ def static_checks(base=HERE):
         cells.append((action, column))
     expected = {(a, c) for a in domains for c in columns}
     require(len(cells) == 3456 and set(cells) == expected, 'coverage must be exactly 64 x 54')
-    def init_contract(statement, target):
+    init_names = {col: 'TypInv' if col == 'TypeOK' else 'P_' + col if col in {'B2OffInit', 'SI1', 'SI2', 'SI3', 'SI4', 'SI5', 'SI6'} else col for col in columns}
+    wanted, initialized = set(init_names.values()), set()
+    for key in reach:
+        statement = g.nodes[key].statement
+        if not re.search(r'\bInit\s*=>', statement):
+            continue
         if statement.lstrip().startswith('ASSUME '):
-            ps, goal = sequent(statement)
+            premises, goal = sequent(statement)
         else:
-            ps, goal = [], statement
-        return set(map(compact, ps)) <= {'Sizes', 'Design', 'Location'} and compact(goal) == 'Init=>' + target
-    for col in columns:
-        goal = 'TypInv' if col == 'TypeOK' else 'P_' + col if col in {'B2OffInit', 'SI1', 'SI2', 'SI3', 'SI4', 'SI5', 'SI6'} else col
-        require(any(init_contract(g.nodes[k].statement, goal) for k in reach), 'missing Init target: ' + col)
+            premises, goal = [], statement
+        match = re.fullmatch(r'Init=>(\w+)', compact(goal))
+        if match and match[1] in wanted:
+            require(set(map(compact, premises)) <= {'Sizes', 'Design', 'Location'}, 'Init contract premises: ' + key)
+            initialized.add(match[1])
+    for column, goal in init_names.items():
+        require(goal in initialized, 'missing Init target: ' + column)
     degrees = {k: 0 for k in reach}
     for k in reach:
         for dep in g.nodes[k].edges & reach:

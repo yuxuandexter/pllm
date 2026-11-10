@@ -46,8 +46,9 @@ python3 verification/pd-disagg/trace/check.py --out "$PWD/check-output"
 # Run bounded TLC model checking on PdCore.tla (64 actions, 54 inductive invariants)
 TLA2TOOLS_JAR=/path/to/tla2tools.jar python3 verification/pd-disagg/spec/check.py --out "$PWD/model-output"
 
-# Verify mechanized TLAPS + Z3 proofs (slice check on a theorem range, or full proof tree)
-tlapm --toolbox 1 120 --threads 4 verification/pd-disagg/proofs/PdCore_Proof.tla
+# Check the packaged TLAPS proof sources and sample a module
+verification/pd-disagg/proofs/verify.sh --static
+verification/pd-disagg/proofs/verify.sh --module PdABBQBase --out proof-review
 ```
 
 ## Architecture
@@ -63,4 +64,4 @@ In disaggregated Prefill-Decode serving, one-sided GPUDirect RDMA transfers, sha
 
 ---
 
-*MIT License ([LICENSE](LICENSE)). Engine implementation: [`python/minisgl/disagg/`](python/minisgl/disagg/); formal `TLA+` specification: [`verification/pd-disagg/spec/PdCore.tla`](verification/pd-disagg/spec/PdCore.tla) ([`verification/pd-disagg/proofs/STATUS.md`](verification/pd-disagg/proofs/STATUS.md)); trace & mutation gates: [`verification/pd-disagg/trace/`](verification/pd-disagg/trace/README.md); upstream SGLang and vLLM bug analyses and impossibility proof: [`verification/pd-disagg/case-studies/`](verification/pd-disagg/case-studies/README.md). Built on [`mini-sglang`](https://github.com/sgl-project/mini-sglang).*
+*MIT License ([LICENSE](LICENSE)). Engine implementation: [`python/minisgl/disagg/`](python/minisgl/disagg/); formal `TLA+` specification: [`verification/pd-disagg/spec/PdCore.tla`](verification/pd-disagg/spec/PdCore.tla) ([`verification/pd-disagg/proofs/README.md`](verification/pd-disagg/proofs/README.md)); trace & mutation gates: [`verification/pd-disagg/trace/`](verification/pd-disagg/trace/README.md); upstream SGLang and vLLM bug analyses and impossibility proof: [`verification/pd-disagg/case-studies/`](verification/pd-disagg/case-studies/README.md). Built on [`mini-sglang`](https://github.com/sgl-project/mini-sglang).*

@@ -3,7 +3,7 @@
 `PdCore.tla` models the protocol design. It is not extracted from Python code.
 `MC_pd_ind.tla` defines `IndInv`, which includes `Safety` as a conjunct.
 The public model differs from the proof target only by a mechanically checked
-renaming. See [proof status](../proofs/STATUS.md) for source hashes and proof results.
+renaming. See [proof status](../proofs/README.md) for source hashes and proof results.
 
 | State and actions | Purpose |
 |---|---|
