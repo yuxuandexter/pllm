@@ -1,0 +1,310 @@
+---- MODULE PdV22Next ----
+EXTENDS PdFinalAction_Arrive, PdFinalAction_Cqe, PdFinalAction_DAbort, PdFinalAction_DBadLen, PdFinalAction_DFinish, PdFinalAction_DFinishOvl, PdFinalAction_DGrow, PdFinalAction_DInband, PdFinalAction_DLanded, PdFinalAction_DLaunchNext, PdFinalAction_DReadDone, PdFinalAction_DReadFail, PdFinalAction_DRecvNopost, PdFinalAction_DRecvNotice, PdFinalAction_DRecvReq, PdFinalAction_DRecvSinfo, PdFinalAction_DRelUnneeded, PdFinalAction_DSinfoBadLen, PdFinalAction_DTimeout, PdFinalAction_DXferFailed, PdFinalAction_Done, PdFinalAction_DrainDone, PdFinalAction_DrainTimeout, PdFinalAction_Evict, PdFinalAction_FlushAll, PdFinalAction_Hang, PdFinalAction_HwIssue, PdFinalAction_HwStop, PdFinalAction_KDone, PdFinalAction_KLand, PdFinalAction_KLaunch, PdFinalAction_KLaunchWG, PdFinalAction_LibFailRet, PdFinalAction_PAbort, PdFinalAction_PAllocPrefix, PdFinalAction_PCancelReg, PdFinalAction_PDedup, PdFinalAction_PDrainLibFail, PdFinalAction_PExpDone, PdFinalAction_PExpose, PdFinalAction_PHit, PdFinalAction_PNoPost, PdFinalAction_PNoPrefix, PdFinalAction_PPoll, PdFinalAction_PPost, PdFinalAction_PRecvReq, PdFinalAction_PRelease, PdFinalAction_PSeal, PdFinalAction_PSentDone, PdFinalAction_PSentFail, PdFinalAction_PSubmit, PdFinalAction_PTimeout, PdFinalAction_PagePoll, PdFinalAction_RRecvReply, PdFinalAction_RTimeout, PdFinalAction_RecvHello, PdFinalAction_Resume, PdFinalAction_SEvict, PdFinalAction_SPrefixLand, PdFinalAction_SPrefixPoll, PdFinalAction_StreamLand, PdFinalAction_Teardown, PdFinalAction_Unquarantine, PdFinalAction_XRecvRel, PdFinalFamilies, PdV22NextPartition
+HIDE DEF AbstractLocation, Active, AfterEv, Arrive, AuxType_005ae912248d6948, AuxType_0075e37f7f3c91ec, AuxType_027d8d9d83cf40b0, AuxType_05b61b8856908043, AuxType_065f61dad67eb9e2, AuxType_0cd814f5e0dc64c0, AuxType_0dae22251ff24c86, AuxType_16b8b605f6e99dc0, AuxType_216ef10720ab307b, AuxType_2a4ef9edc6df02c3, AuxType_2dcb2c05bb6a4884, AuxType_2e61a584019747ae, AuxType_2f2fcf8857229685, AuxType_31e485d4b745184b, AuxType_3f8733edd2407792, AuxType_3fdf9352b74a0ef7, AuxType_483df3501ce352ae, AuxType_4c3a03522b6e3f94, AuxType_4cf173485b87d54f, AuxType_5454ba58ce6cf21d, AuxType_5511189d22238a64, AuxType_6b10eee8fbf863b7, AuxType_6c567d3bddaad3dd, AuxType_731d82ba1a57c1cc, AuxType_73d97f5a6965eefe, AuxType_76cfbb88b566ee53, AuxType_78709f469dba232a, AuxType_7a2eea0d18bce7cf, AuxType_8329c94b73925111, AuxType_8a1e7e9a2c567b2e, AuxType_8b9ab1a2ae146b89, AuxType_8bb3fe86f1f5f291, AuxType_95738d3d7da7a805, AuxType_9858bc13478432c3, AuxType_9cfe79b2a4479af8, AuxType_9ef278c147c12b12, AuxType_a4f012cb1d798492, AuxType_acbb4c559b8b11da, AuxType_b4c35f0bd68d4e22, AuxType_b8303af5c8f50f36, AuxType_ba9b12f8121bcf2d, AuxType_c4345ad3846ce0f4, AuxType_c739ffd38bcba46d, AuxType_cfb21e925ad63826, AuxType_d2a2a7e3af4f9691, AuxType_d3dd8b4090431094, AuxType_dc8120345fba5649, AuxType_ef40c909f9f48a73, AuxType_fa53664361dab1de, AuxType_fe8bb090b8ff1fa3, BaseInit, BaseKReadIntegrity, BaseLoc, BaseNext, BaseQuietConservation, BaseReadOwnLanded, BaseSafety, BaseSealOnlyLanded, BaseSendOwnLanded, BaseTypeOK, Bump, CB2Base, CB2Pull, CB2Push, CB2Small, CBase, CMut, CPull, CPull12, CPullFOF, CPullIgn, CPullKFU, CPullKUL, CPullPRF, CPullPS2, CPullSFA2, CPush, CPush12, CPushCS, CPushDTR, CPushFOF, CPushHCW, CPushIgn, CPushKDE, CPushKFU, CPushKUF, CPushKUL, CPushNBC, CPushNok, CPushPNC, CPushPRF, CPushPS2, CPushTO, CoreTypeOK, Cqe, CqeHw, DAbort, DBadLen, DEnd, DFinish, DFinishOvl, DGrow, DInband, DInst, DLanded, DLaunchNext, DReadDone, DReadFail, DRecvNopost, DRecvNotice, DRecvReq, DRecvSinfo, DRelUnneeded, DResetLedger, DSinfoBadLen, DStartRun, DTimeout, DXferFailed, Design, DomainEffect_DRelUnneeded, DomainEffect_DSinfoBadLen, DomainEffect_PNoPost, DomainKeep_Arrive, DomainKeep_Cqe, DomainKeep_DAbort, DomainKeep_DBadLen, DomainKeep_DFinish, DomainKeep_DFinishOvl, DomainKeep_DGrow, DomainKeep_DInband, DomainKeep_DLanded, DomainKeep_DLaunchNext, DomainKeep_DReadDone, DomainKeep_DReadFail, DomainKeep_DRecvNopost, DomainKeep_DRecvNotice, DomainKeep_DRecvReq, DomainKeep_DRecvSinfo, DomainKeep_DRelUnneeded, DomainKeep_DSinfoBadLen, DomainKeep_DTimeout, DomainKeep_DXferFailed, DomainKeep_Done, DomainKeep_DrainDone, DomainKeep_DrainTimeout, DomainKeep_Evict, DomainKeep_FlushAll, DomainKeep_Hang, DomainKeep_HwIssue, DomainKeep_HwStop, DomainKeep_KDone, DomainKeep_KLand, DomainKeep_KLaunch, DomainKeep_KLaunchWG, DomainKeep_LibFailRet, DomainKeep_PAbort, DomainKeep_PAllocPrefix, DomainKeep_PCancelReg, DomainKeep_PDedup, DomainKeep_PDrainLibFail, DomainKeep_PExpDone, DomainKeep_PExpose, DomainKeep_PHit, DomainKeep_PNoPost, DomainKeep_PNoPrefix, DomainKeep_PPoll, DomainKeep_PPost, DomainKeep_PRecvReq, DomainKeep_PRelease, DomainKeep_PSeal, DomainKeep_PSentDone, DomainKeep_PSentFail, DomainKeep_PSubmit, DomainKeep_PTimeout, DomainKeep_PagePoll, DomainKeep_RRecvReply, DomainKeep_RTimeout, DomainKeep_RecvHello, DomainKeep_Resume, DomainKeep_SEvict, DomainKeep_SPrefixLand, DomainKeep_SPrefixPoll, DomainKeep_StreamLand, DomainKeep_Teardown, DomainKeep_Unquarantine, DomainKeep_XRecvRel, Done, DrainDone, DrainEnds, DrainTimeout, EntryQuarantineDisjoint, EventualStopEvidence, Evict, EvidenceAt, ExactTypeBridge, ExpInst, ExpPage, Fair, FairEviction, FairFinality, FairStop, FairUnquarantine, FlushAll, FreeOrDrain, GFr, GTo, GenFiltered, GenOK, Gens, GiveUpTo, GiveUpToN, Group_Arrive_03, Group_DAbort_04, Group_DBadLen_04, Group_DFinishOvl_04, Group_DFinish_04, Group_DGrow_03, Group_DInband_01, Group_DLanded_03, Group_DReadDone_05, Group_DReadFail_04, Group_DRecvNopost_03, Group_DRecvNotice_04, Group_DRecvReq_05, Group_DRelUnneeded_03, Group_DSinfoBadLen_04, Group_DTimeout_04, Group_DXferFailed_04, Group_Done_03, Group_DrainDone_01, Group_DrainTimeout_03, Group_Evict_03, Group_FlushAll_02, Group_Hang_01, Group_HwIssue_01, Group_HwIssue_04, Group_HwStop_01, Group_KLaunchWG_01, Group_LibFailRet_01, Group_LibFailRet_04, Group_PAbort_05, Group_PAllocPrefix_02, Group_PCancelReg_04, Group_PDedup_02, Group_PDrainLibFail_03, Group_PExpDone_01, Group_PExpDone_05, Group_PHit_02, Group_PNoPost_03, Group_PNoPrefix_01, Group_PNoPrefix_02, Group_PPoll_01, Group_PPoll_04, Group_PRelease_01, Group_PRelease_05, Group_PSeal_02, Group_PSentDone_01, Group_PSentDone_05, Group_PSentFail_04, Group_PTimeout_05, Group_PagePoll_03, Group_RRecvReply_01, Group_RRecvReply_04, Group_RTimeout_03, Group_RecvHello_01, Group_Resume_03, Group_SEvict_02, Group_SPrefixLand_02, Group_SPrefixPoll_02, Group_StreamLand_03, Group_Teardown_01, Group_Unquarantine_01, Group_XRecvRel_01, Group_XRecvRel_02, GrownOf, GrownOwn, GrownP, GrownRows, Hang, Held, HitIdentity, HwIssue, HwStop, InFl, IndInit, IndInv, IndNext, Init, InitImpliesMessageShape, InitInst, InitPage, Inst, Inv, IsD, IsP, K1, K10, K11, K12, K13, K14, K15, K16, K17, K2, K3, K4, K5, K6, K7, K8, K9, KData, KDone, KEnt, KGEnt, KHeld, KLand, KLaunch, KLaunchWG, KPages, KPinned, KReadIntegrity, KRowOK, KSlots, KStepEnds, KStruct, LFinalitySpec, LNoEvictionSpec, LNoRecoverySpec, LNoStopSpec, LNoUnquarantineSpec, LSpec, LStopSpec, LegacyEvict, LibFailRet, Loc, Location, LtOf, Maps, MessageShape, Msg, MsgSpace, MsgT, MsgU, MsgXDomain, Mutants, NHits, NL, NTok, NewGen, Next, NextB2, NextD, NextFamilies, NextKernel, NextMessage, NextP, NoDLD, NoDLP, NoDLRouter, NoEvictUnderRDMA, NoFreeUnderRead, NoStrayAccess, NoWriteInto, NonnegativeNatFact, OneReply, OwnedBy, OwnerRecovery, PAbort, PAllocPrefix, PCancelReg, PConj, PDedup, PDrainLibFail, PDrainLibFailBroken, PDrainLibFailSafe, PEnd, PExpDone, PExpose, PHit, PInst, PLens, PNoPost, PNoPrefix, PPoll, PPost, PRecvReq, PRelease, PSeal, PSentDone, PSentFail, PSentFailBroken, PSentFailSafe, PSubmit, PTimeout, P_B2OffInit, P_IndInvDecomposition, P_PagePoolsDisjoint, P_PostIndInvDecomposition, P_SBadUnref_Disabled, P_SI1, P_SI2, P_SI3, P_SI4, P_SI5, P_SI6, PagePoll, PageTo, PageToG, Pages, PagesBack, PagesBackUnderFaults, Part_Arrive_01_01, Part_Arrive_01_02, Part_Arrive_02_01, Part_Arrive_02_02, Part_Cqe_01_01, Part_Cqe_01_02, Part_Cqe_02_01, Part_Cqe_02_02, Part_Cqe_03_01, Part_Cqe_03_02, Part_DAbort_01_01, Part_DAbort_01_02, Part_DAbort_02_01, Part_DAbort_02_02, Part_DAbort_03_01, Part_DAbort_03_02, Part_DBadLen_01_01, Part_DBadLen_01_02, Part_DBadLen_02_01, Part_DBadLen_02_02, Part_DBadLen_03_01, Part_DBadLen_03_02, Part_DFinishOvl_01_01, Part_DFinishOvl_01_02, Part_DFinishOvl_02_01, Part_DFinishOvl_02_02, Part_DFinishOvl_03_01, Part_DFinishOvl_03_02, Part_DFinish_01_01, Part_DFinish_01_02, Part_DFinish_02_01, Part_DFinish_02_02, Part_DFinish_03_01, Part_DFinish_03_02, Part_DGrow_01_01, Part_DGrow_01_02, Part_DGrow_02_01, Part_DGrow_02_02, Part_DLanded_01_01, Part_DLanded_01_02, Part_DLanded_02_01, Part_DLanded_02_02, Part_DLaunchNext_01_01, Part_DLaunchNext_01_02, Part_DLaunchNext_02_01, Part_DLaunchNext_02_02, Part_DReadDone_01_01, Part_DReadDone_01_02, Part_DReadDone_02_01, Part_DReadDone_02_02, Part_DReadDone_03_01, Part_DReadDone_03_02, Part_DReadDone_04_01, Part_DReadDone_04_02, Part_DReadFail_01_01, Part_DReadFail_01_02, Part_DReadFail_02_01, Part_DReadFail_02_02, Part_DReadFail_03_01, Part_DReadFail_03_02, Part_DRecvNopost_01_01, Part_DRecvNopost_01_02, Part_DRecvNopost_02_01, Part_DRecvNopost_02_02, Part_DRecvNotice_01_01, Part_DRecvNotice_01_02, Part_DRecvNotice_02_01, Part_DRecvNotice_02_02, Part_DRecvNotice_03_01, Part_DRecvNotice_03_02, Part_DRecvReq_01_01, Part_DRecvReq_01_02, Part_DRecvReq_02_01, Part_DRecvReq_02_02, Part_DRecvReq_03_01, Part_DRecvReq_03_02, Part_DRecvReq_04_01, Part_DRecvReq_04_02, Part_DRecvSinfo_01_01, Part_DRecvSinfo_01_02, Part_DRecvSinfo_02_01, Part_DRecvSinfo_02_02, Part_DRecvSinfo_03_01, Part_DRecvSinfo_03_02, Part_DRelUnneeded_01_01, Part_DRelUnneeded_01_02, Part_DRelUnneeded_02_01, Part_DRelUnneeded_02_02, Part_DSinfoBadLen_01_01, Part_DSinfoBadLen_01_02, Part_DSinfoBadLen_02_01, Part_DSinfoBadLen_02_02, Part_DSinfoBadLen_03_01, Part_DSinfoBadLen_03_02, Part_DTimeout_01_01, Part_DTimeout_01_02, Part_DTimeout_02_01, Part_DTimeout_02_02, Part_DTimeout_03_01, Part_DTimeout_03_02, Part_DXferFailed_01_01, Part_DXferFailed_01_02, Part_DXferFailed_02_01, Part_DXferFailed_02_02, Part_DXferFailed_03_01, Part_DXferFailed_03_02, Part_Done_01_01, Part_Done_01_02, Part_Done_02_01, Part_Done_02_02, Part_DrainTimeout_01_01, Part_DrainTimeout_01_02, Part_DrainTimeout_02_01, Part_DrainTimeout_02_02, Part_Evict_01_01, Part_Evict_01_02, Part_Evict_02_01, Part_Evict_02_02, Part_FlushAll_01_01, Part_FlushAll_01_02, Part_Hang_02_01, Part_Hang_02_02, Part_Hang_03_01, Part_Hang_03_02, Part_HwIssue_02_01, Part_HwIssue_02_02, Part_HwIssue_03_01, Part_HwIssue_03_02, Part_HwStop_02_01, Part_HwStop_02_02, Part_HwStop_03_01, Part_HwStop_03_02, Part_HwStop_04_01, Part_HwStop_04_02, Part_KDone_01_01, Part_KDone_01_02, Part_KDone_02_01, Part_KDone_02_02, Part_KLand_01_01, Part_KLand_01_02, Part_KLand_02_01, Part_KLand_02_02, Part_KLaunch_01_01, Part_KLaunch_01_02, Part_KLaunch_02_01, Part_KLaunch_02_02, Part_KLaunch_03_01, Part_KLaunch_03_02, Part_LibFailRet_02_01, Part_LibFailRet_02_02, Part_LibFailRet_03_01, Part_LibFailRet_03_02, Part_PAbort_01_01, Part_PAbort_01_02, Part_PAbort_02_01, Part_PAbort_02_02, Part_PAbort_03_01, Part_PAbort_03_02, Part_PAbort_04_01, Part_PAbort_04_02, Part_PAllocPrefix_01_01, Part_PAllocPrefix_01_02, Part_PCancelReg_01_01, Part_PCancelReg_01_02, Part_PCancelReg_02_01, Part_PCancelReg_02_02, Part_PCancelReg_03_01, Part_PCancelReg_03_02, Part_PDedup_01_01, Part_PDedup_01_02, Part_PDrainLibFail_01_01, Part_PDrainLibFail_01_02, Part_PDrainLibFail_02_01, Part_PDrainLibFail_02_02, Part_PExpDone_02_01, Part_PExpDone_02_02, Part_PExpDone_03_01, Part_PExpDone_03_02, Part_PExpDone_04_01, Part_PExpDone_04_02, Part_PExpose_01_01, Part_PExpose_01_02, Part_PExpose_02_01, Part_PExpose_02_02, Part_PExpose_03_01, Part_PExpose_03_02, Part_PExpose_04_01, Part_PExpose_04_02, Part_PHit_01_01, Part_PHit_01_02, Part_PNoPost_01_01, Part_PNoPost_01_02, Part_PNoPost_02_01, Part_PNoPost_02_02, Part_PPoll_02_01, Part_PPoll_02_02, Part_PPoll_03_01, Part_PPoll_03_02, Part_PPost_01_01, Part_PPost_01_02, Part_PPost_02_01, Part_PPost_02_02, Part_PPost_03_01, Part_PPost_03_02, Part_PPost_04_01, Part_PPost_04_02, Part_PRecvReq_01_01, Part_PRecvReq_01_02, Part_PRecvReq_02_01, Part_PRecvReq_02_02, Part_PRecvReq_03_01, Part_PRecvReq_03_02, Part_PRecvReq_04_01, Part_PRecvReq_04_02, Part_PRelease_02_01, Part_PRelease_02_02, Part_PRelease_03_01, Part_PRelease_03_02, Part_PRelease_04_01, Part_PRelease_04_02, Part_PSeal_01_01, Part_PSeal_01_02, Part_PSentDone_02_01, Part_PSentDone_02_02, Part_PSentDone_03_01, Part_PSentDone_03_02, Part_PSentDone_04_01, Part_PSentDone_04_02, Part_PSentFail_01_01, Part_PSentFail_01_02, Part_PSentFail_02_01, Part_PSentFail_02_02, Part_PSentFail_03_01, Part_PSentFail_03_02, Part_PSubmit_01_01, Part_PSubmit_01_02, Part_PSubmit_02_01, Part_PSubmit_02_02, Part_PSubmit_03_01, Part_PSubmit_03_02, Part_PTimeout_01_01, Part_PTimeout_01_02, Part_PTimeout_02_01, Part_PTimeout_02_02, Part_PTimeout_03_01, Part_PTimeout_03_02, Part_PTimeout_04_01, Part_PTimeout_04_02, Part_PagePoll_01_01, Part_PagePoll_01_02, Part_PagePoll_02_01, Part_PagePoll_02_02, Part_RRecvReply_02_01, Part_RRecvReply_02_02, Part_RRecvReply_03_01, Part_RRecvReply_03_02, Part_RTimeout_01_01, Part_RTimeout_01_02, Part_RTimeout_02_01, Part_RTimeout_02_02, Part_Resume_01_01, Part_Resume_01_02, Part_Resume_02_01, Part_Resume_02_02, Part_SEvict_01_01, Part_SEvict_01_02, Part_SPrefixLand_01_01, Part_SPrefixLand_01_02, Part_SPrefixPoll_01_01, Part_SPrefixPoll_01_02, Part_StreamLand_01_01, Part_StreamLand_01_02, Part_StreamLand_02_01, Part_StreamLand_02_02, Part_XRecvRel_03_01, Part_XRecvRel_03_02, Part_XRecvRel_04_01, Part_XRecvRel_04_02, Part_XRecvRel_05_01, Part_XRecvRel_05_02, Part_XRecvRel_06_01, Part_XRecvRel_06_02, PeerOf, PhSet, PhysicalStopProgress, PinBlocks, PinInv, PinnedLocAgreement, PinnedLocOf, PinnedLocation, PinnedLocationFact, PinnedPrivateLocation, PinnedSharedLocation, PositiveNatFact, PrefcMatchesHolders, PrivateMapOwner, PrivateRange, ProductIsInteger, ProofInvParts, ProofTypeBridge, ProofTypeBridgeNext, ProofTypeWeaken, ProofTypeWeakenNext, QConj, QPinBlocks, QuarEventuallyFree, QuarNeverMapped, QuarNoReg, QuarSticky, Quiet, QuietConservation, RRecvReply, RTimeout, ReadOwnLanded, RecEnds, RecvHello, ReplyTruth, ReqEnds, Resume, Rq, S1, S2, S3, S4, S5, S6, SAccess, SBadUnref, SData, SEvict, SFollow, SH, SHPin, SHeld, SI1, SI2, SI3, SI4, SI5, SI6, SI7, SI8, SInd, SInit, SMapIntegrity, SNext, SPages, SPin, SPrefixLand, SPrefixPoll, SRefE, SRefQ, SRefR, SRowReady, SRows, SSendReady, STok, STypeOK, SWidth, Safety, SealOnlyLanded, SendOwnLanded, SendReady, ShapeBaseType, ShapeEffect_Arrive, ShapeEffect_Cqe, ShapeEffect_DAbort, ShapeEffect_DBadLen, ShapeEffect_DFinish, ShapeEffect_DFinishOvl, ShapeEffect_DGrow, ShapeEffect_DInband, ShapeEffect_DLanded, ShapeEffect_DLaunchNext, ShapeEffect_DReadDone, ShapeEffect_DReadFail, ShapeEffect_DRecvNopost, ShapeEffect_DRecvNotice, ShapeEffect_DRecvReq, ShapeEffect_DRecvSinfo, ShapeEffect_DRelUnneeded, ShapeEffect_DSinfoBadLen, ShapeEffect_DTimeout, ShapeEffect_DXferFailed, ShapeEffect_Done, ShapeEffect_DrainDone, ShapeEffect_DrainTimeout, ShapeEffect_Evict, ShapeEffect_FlushAll, ShapeEffect_Hang, ShapeEffect_HwIssue, ShapeEffect_HwStop, ShapeEffect_KDone, ShapeEffect_KLand, ShapeEffect_KLaunch, ShapeEffect_KLaunchWG, ShapeEffect_LibFailRet, ShapeEffect_PAbort, ShapeEffect_PAllocPrefix, ShapeEffect_PCancelReg, ShapeEffect_PDedup, ShapeEffect_PDrainLibFail, ShapeEffect_PExpDone, ShapeEffect_PExpose, ShapeEffect_PHit, ShapeEffect_PNoPost, ShapeEffect_PNoPrefix, ShapeEffect_PPoll, ShapeEffect_PPost, ShapeEffect_PRecvReq, ShapeEffect_PRelease, ShapeEffect_PSeal, ShapeEffect_PSentDone, ShapeEffect_PSentFail, ShapeEffect_PSubmit, ShapeEffect_PTimeout, ShapeEffect_PagePoll, ShapeEffect_RRecvReply, ShapeEffect_RTimeout, ShapeEffect_RecvHello, ShapeEffect_Resume, ShapeEffect_SEvict, ShapeEffect_SPrefixLand, ShapeEffect_SPrefixPoll, ShapeEffect_StreamLand, ShapeEffect_Teardown, ShapeEffect_Unquarantine, ShapeEffect_XRecvRel, ShapeImpliesTags, ShapeInitiatorLocation, ShapeKeep_Arrive, ShapeKeep_Cqe, ShapeKeep_DAbort, ShapeKeep_DBadLen, ShapeKeep_DFinish, ShapeKeep_DFinishOvl, ShapeKeep_DGrow, ShapeKeep_DInband, ShapeKeep_DLanded, ShapeKeep_DLaunchNext, ShapeKeep_DReadDone, ShapeKeep_DReadFail, ShapeKeep_DRecvNopost, ShapeKeep_DRecvNotice, ShapeKeep_DRecvReq, ShapeKeep_DRecvSinfo, ShapeKeep_DRelUnneeded, ShapeKeep_DSinfoBadLen, ShapeKeep_DTimeout, ShapeKeep_DXferFailed, ShapeKeep_Done, ShapeKeep_DrainDone, ShapeKeep_DrainTimeout, ShapeKeep_Evict, ShapeKeep_FlushAll, ShapeKeep_Hang, ShapeKeep_HwIssue, ShapeKeep_HwStop, ShapeKeep_KDone, ShapeKeep_KLand, ShapeKeep_KLaunch, ShapeKeep_KLaunchWG, ShapeKeep_LibFailRet, ShapeKeep_PAbort, ShapeKeep_PAllocPrefix, ShapeKeep_PCancelReg, ShapeKeep_PDedup, ShapeKeep_PDrainLibFail, ShapeKeep_PExpDone, ShapeKeep_PExpose, ShapeKeep_PHit, ShapeKeep_PNoPost, ShapeKeep_PNoPrefix, ShapeKeep_PPoll, ShapeKeep_PPost, ShapeKeep_PRecvReq, ShapeKeep_PRelease, ShapeKeep_PSeal, ShapeKeep_PSentDone, ShapeKeep_PSentFail, ShapeKeep_PSubmit, ShapeKeep_PTimeout, ShapeKeep_PagePoll, ShapeKeep_RRecvReply, ShapeKeep_RTimeout, ShapeKeep_RecvHello, ShapeKeep_Resume, ShapeKeep_SEvict, ShapeKeep_SPrefixLand, ShapeKeep_SPrefixPoll, ShapeKeep_StreamLand, ShapeKeep_Teardown, ShapeKeep_Unquarantine, ShapeKeep_XRecvRel, ShapeMessage, ShapeNetFrame, ShapeReadyLength, ShapeReqPeers, Shape_K12, Shape_K2, Shape_K8, Shape_T_alive, Shape_T_crep, Shape_T_drep, Shape_T_dsucc, Shape_T_gbad, Shape_T_gen, Shape_T_hd, Shape_T_hok, Shape_T_hp, Shape_T_hw, Shape_T_iv, Shape_T_kfly, Shape_T_kpin, Shape_T_krs, Shape_T_led, Shape_T_nfail, Shape_T_nx, Shape_T_pgn, Shape_T_ph, Shape_T_plt, Shape_T_pqp, Shape_T_pr, Shape_T_prefc, Shape_T_pst, Shape_T_ptl, Shape_T_pvis, Shape_T_rd, Shape_T_rg, Shape_T_rhit, Shape_T_rp, Shape_T_rpe, Shape_T_rpg, Shape_T_rt, Shape_T_rx, Shape_T_sfly, Shape_T_sled, Shape_T_torn, Shape_T_xd, Shape_T_xdst, Shape_T_xg, Shape_T_xk, Shape_T_xlt, Shape_T_xnt, Shape_T_xp, Shape_T_xr, Shape_T_xsrc, Shape_T_xst, SharedImmutable, SharedLedRef, SharedRange, ShiftedSharedRange, SizeArithmetic, Sizes, Spec, Step_Arrive, Step_Cqe, Step_DAbort, Step_DBadLen, Step_DFinish, Step_DFinishOvl, Step_DGrow, Step_DInband, Step_DLanded, Step_DLaunchNext, Step_DReadDone, Step_DReadFail, Step_DRecvNopost, Step_DRecvNotice, Step_DRecvReq, Step_DRecvSinfo, Step_DRelUnneeded, Step_DSinfoBadLen, Step_DTimeout, Step_DXferFailed, Step_Done, Step_DrainDone, Step_DrainTimeout, Step_Evict, Step_FlushAll, Step_Hang, Step_HwIssue, Step_HwStop, Step_KDone, Step_KLand, Step_KLaunch, Step_KLaunchWG, Step_LibFailRet, Step_PAbort, Step_PAllocPrefix, Step_PCancelReg, Step_PDedup, Step_PDrainLibFail, Step_PExpDone, Step_PExpose, Step_PHit, Step_PNoPost, Step_PNoPrefix, Step_PPoll, Step_PPost, Step_PRecvReq, Step_PRelease, Step_PSeal, Step_PSentDone, Step_PSentFail, Step_PSubmit, Step_PTimeout, Step_PagePoll, Step_RRecvReply, Step_RTimeout, Step_RecvHello, Step_Resume, Step_SEvict, Step_SPrefixLand, Step_SPrefixPoll, Step_StreamLand, Step_Teardown, Step_Unquarantine, Step_XRecvRel, StreamLand, Strengthen, SurvivorPagesBackUnderFaults, SurvivorQuarEventuallyFree, T2BaseTypeOK, TOk, Tag, Teardown, Torn, TypInv, TypeBridgeForward, TypeBridgeUnderShape, TypeOK, Unquarantine, V21_Inv_BaseSafety, V21_Inv_BaseTypeOK, V21_Inv_EntryQuarantineDisjoint, V21_Inv_GenFiltered, V21_Inv_HitIdentity, V21_Inv_K1, V21_Inv_K10, V21_Inv_K11, V21_Inv_K12, V21_Inv_K13, V21_Inv_K14, V21_Inv_K15, V21_Inv_K16, V21_Inv_K17, V21_Inv_K2, V21_Inv_K3, V21_Inv_K4, V21_Inv_K5, V21_Inv_K6, V21_Inv_K7, V21_Inv_K8, V21_Inv_K9, V21_Inv_KReadIntegrity, V21_Inv_KStruct, V21_Inv_MsgXDomain, V21_Inv_NoEvictUnderRDMA, V21_Inv_NoFreeUnderRead, V21_Inv_NoStrayAccess, V21_Inv_OneReply, V21_Inv_P_B2OffInit, V21_Inv_P_SI1, V21_Inv_P_SI2, V21_Inv_P_SI3, V21_Inv_P_SI4, V21_Inv_P_SI5, V21_Inv_P_SI6, V21_Inv_PrefcMatchesHolders, V21_Inv_PrivateMapOwner, V21_Inv_QuarNeverMapped, V21_Inv_QuarNoReg, V21_Inv_QuietConservation, V21_Inv_ReadOwnLanded, V21_Inv_ReplyTruth, V21_Inv_S1, V21_Inv_S2, V21_Inv_S3, V21_Inv_S4, V21_Inv_S5, V21_Inv_S6, V21_Inv_SI7, V21_Inv_SI8, V21_Inv_SInd, V21_Inv_STypeOK, V21_Inv_Safety, V21_Inv_SealOnlyLanded, V21_Inv_SendOwnLanded, V21_Inv_SharedImmutable, V21_Inv_SharedLedRef, V21_Inv_Strengthen, V21_Inv_TypeOK, V21_MsgDomainTransfer, V21_PEndNet, V21_SFollowOff, V21_SFollowStatic, V22_FClose, V22_FDrop, V22_FE2, V22_FEnded, V22_FH2, V22_FHLive, V22_FHPin, V22_FNew, V22_FPX, V22_FPin2, V22_FPosted, V22_FQ2, V22_FQuarantine, V22_FSX, V22_FSrc, V22_FunctionEta, V22_Ind_SType, V22_Ind_SharedImmutable, V22_Ind_T_alive, V22_Ind_T_crep, V22_Ind_T_dedupSeen, V22_Ind_T_dpreOK, V22_Ind_T_drep, V22_Ind_T_dsucc, V22_Ind_T_gbad, V22_Ind_T_gen, V22_Ind_T_hd, V22_Ind_T_hitSeen, V22_Ind_T_hok, V22_Ind_T_hp, V22_Ind_T_hw, V22_Ind_T_iv, V22_Ind_T_kfly, V22_Ind_T_kpin, V22_Ind_T_krs, V22_Ind_T_led, V22_Ind_T_nfail, V22_Ind_T_nx, V22_Ind_T_pgn, V22_Ind_T_ph, V22_Ind_T_plt, V22_Ind_T_pqp, V22_Ind_T_pr, V22_Ind_T_prefc, V22_Ind_T_pst, V22_Ind_T_ptl, V22_Ind_T_pvis, V22_Ind_T_rd, V22_Ind_T_rg, V22_Ind_T_rhit, V22_Ind_T_rp, V22_Ind_T_rpe, V22_Ind_T_rpg, V22_Ind_T_rpgS, V22_Ind_T_rt, V22_Ind_T_rx, V22_Ind_T_schoice, V22_Ind_T_sdata, V22_Ind_T_sentry, V22_Ind_T_sfly, V22_Ind_T_sgen, V22_Ind_T_skey, V22_Ind_T_sled, V22_Ind_T_smap, V22_Ind_T_sown, V22_Ind_T_sprefc, V22_Ind_T_spst, V22_Ind_T_squar, V22_Ind_T_sready, V22_Ind_T_swrite, V22_Ind_T_torn, V22_Ind_T_xd, V22_Ind_T_xdst, V22_Ind_T_xg, V22_Ind_T_xk, V22_Ind_T_xlt, V22_Ind_T_xnt, V22_Ind_T_xp, V22_Ind_T_xprefixOK, V22_Ind_T_xr, V22_Ind_T_xsrc, V22_Ind_T_xsrcP, V22_Ind_T_xsrcS, V22_Ind_T_xst, V22_MatrixEta, V22_PostSharedRefZero, V22_SF_Choice, V22_SF_Holders, V22_SF_Map, V22_SF_MapFrame, V22_SF_MapOrigin, V22_SF_MapPoint, V22_SF_Off, V22_SF_PrivateOrigin, V22_SF_RefCount, V22_SF_Sentry, V22_SF_SentryFrame, V22_SF_SharedData, V22_SF_SharedImmutable, V22_SF_SharedOrigin, V22_SF_SourcePrivate, V22_SF_SourceShared, V22_SF_Squar, V22_SF_SquarFrame, V22_SF_Static, V22_SF_Status, V22_SFollowSharedOrigin, V22_SRefE_Empty, V22_SRefQ_Empty, V22_SRefR_Empty, V22_SharedDestinationExcluded, V22_SharedNoWrite, V22_SharedNoWriteNext, V22_SharedRefZero, V22_SizeParameterTypes, V22_SizeProductBound, V22_SizeRangeFacts, V22_T_SharedImmutable, V22_T_alive, V22_T_crep, V22_T_dedupSeen, V22_T_dpreOK, V22_T_drep, V22_T_dsucc, V22_T_gbad, V22_T_gen, V22_T_hd, V22_T_hitSeen, V22_T_hok, V22_T_hp, V22_T_hw, V22_T_iv, V22_T_kfly, V22_T_kpin, V22_T_krs, V22_T_led, V22_T_net, V22_T_nfail, V22_T_nx, V22_T_pgn, V22_T_ph, V22_T_plt, V22_T_pqp, V22_T_pr, V22_T_prefc, V22_T_pst, V22_T_ptl, V22_T_pvis, V22_T_rd, V22_T_rg, V22_T_rhit, V22_T_rp, V22_T_rpe, V22_T_rpg, V22_T_rpgS, V22_T_rt, V22_T_rx, V22_T_schoice, V22_T_sdata, V22_T_sentry, V22_T_sfly, V22_T_sgen, V22_T_skey, V22_T_sled, V22_T_smap, V22_T_sown, V22_T_sprefc, V22_T_spst, V22_T_squar, V22_T_sready, V22_T_swrite, V22_T_torn, V22_T_xd, V22_T_xdst, V22_T_xg, V22_T_xk, V22_T_xlt, V22_T_xnt, V22_T_xp, V22_T_xprefixOK, V22_T_xr, V22_T_xsrc, V22_T_xsrcP, V22_T_xsrcS, V22_T_xst, W_BadLen, W_DrainD, W_DrainFreed, W_DrainP, W_ErrReply, W_FadDrain, W_FailRet, W_FinishOvl, W_GrowDrain, W_GrowOvl, W_GrowOvlRead, W_GrowRead, W_Hit, W_KDoneFrees, W_KHit, W_KLaunchD, W_KLaunchP, W_KOverlap, W_KPinDrain, W_KQuarPinned, W_KSealPinned, W_LateLand, W_NokQuar, W_PCancelDrain, W_PCancelReg, W_PDedup, W_PDrainFreed, W_PDrainLibFail, W_PEndCancelReg, W_PHit, W_PRebind, W_PRegRelease, W_PRelease, W_PSeal, W_PSubmitLate, W_PeerFailQuar, W_Quar, W_QuarD, W_QuarHit, W_QuarLeft, W_QuarP, W_Reuse, W_Revoked, W_Shared, W_SharedQuar, W_SinfoBadLen, W_SuccDrain, W_Success, W_TwoShared, Writing, XRecvRel, Xids, basevars, ghV, instV, kV, pgV, recV, rtV, sV, vars, xV
+
+
+
+\* V22-SCOPE: all-imported-defs; contracts unchanged; per-proof cited definitions only.
+
+
+
+
+
+
+
+
+
+\* PRACTICE P2: named imported theorem definitions are usable by default.
+
+
+THEOREM NextPreservesIndInv ==
+ ASSUME Sizes, Design
+ PROVE PinInv /\ Next => PinInv'
+<1>1. Location BY ONLY Sizes, PinnedLocationFact, SMTT(5) DEF PinnedLocationFact
+<1> DEFINE V22_NextChunk_B2_01 ==
+            \/ (\E i \in PInst, r \in Rq, p \in SPages : PHit(i,r,p))
+            \/ (\E i \in PInst, r \in Rq, p \in SPages : PAllocPrefix(i,r,p))
+            \/ (\E i \in PInst, r \in Rq : PNoPrefix(i,r))
+
+<1> DEFINE V22_NextChunk_B2_02 ==
+            \/ (\E i \in PInst, r \in Rq : PSeal(i,r))
+            \/ (\E i \in PInst, r \in Rq, q \in SPages : PDedup(i,r,q))
+            \/ (\E p \in SPages : SPrefixLand(p))
+
+<1> DEFINE V22_NextChunk_B2_03 ==
+            \/ (\E p \in SPages : SPrefixPoll(p))
+            \/ (\E p \in SPages : SEvict(p))
+            \/ (\E i \in PInst : FlushAll(i))
+
+<1> DEFINE V22_NextChunk_D_01 ==
+            \/ (\E j \in Inst, r \in Rq : DLanded(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DRecvSinfo(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DLaunchNext(j,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_D_02 ==
+            \/ (\E j \in Inst, r \in Rq : DGrow(j,r) /\ SFollow)
+            \/ (\E x \in Xids : DInband(x) /\ SFollow)
+            \/ (\E x \in Xids : DRecvNopost(x) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_D_03 ==
+            \/ (\E p \in Pages : PagePoll(p) /\ SFollow)
+            \/ (\E p \in Pages : DrainTimeout(p) /\ SFollow)
+            \/ (\E p \in Pages : DrainDone(p) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_D_04 ==
+            \/ (\E s \in Pages : Evict(s) /\ SFollow)
+            \/ (\E p \in Pages : StreamLand(p) /\ SFollow)
+            \/ (\E p \in Pages : Unquarantine(p) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_D_05 ==
+            \/ (\E i \in Inst, s \in KSlots, r \in Rq, p \in Pages : KLaunchWG(i,s,r,p) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Kernel_01 ==
+            \/ (\E i \in Inst, s \in KSlots, rows \in SUBSET Rq : KLaunch(i,s,rows) /\ SFollow)
+            \/ (\E i \in Inst, s \in KSlots : KLand(i,s) /\ SFollow)
+            \/ (\E i \in Inst, s \in KSlots : KDone(i,s) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_01 ==
+            \/ (\E r \in Rq, i \in PInst, j \in DInst : Arrive(r,i,j) /\ SFollow)
+            \/ (\E r \in Rq : RTimeout(r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PRecvReq(i,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_02 ==
+            \/ (\E i \in Inst, r \in Rq : PPost(i,r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PSentFail(i,r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PExpose(i,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_03 ==
+            \/ (\E i \in Inst, r \in Rq : PAbort(i,r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PTimeout(i,r) /\ SFollow)
+            \/ (\E i \in Inst : PNoPost(i) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_04 ==
+            \/ (\E j \in Inst, r \in Rq : DRecvReq(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DXferFailed(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DReadDone(j,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_05 ==
+            \/ (\E j \in Inst, r \in Rq : DReadFail(j,r) /\ SFollow)
+            \/ (\E j \in Inst : DRelUnneeded(j) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DFinish(j,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_06 ==
+            \/ (\E j \in Inst, r \in Rq : DFinishOvl(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DAbort(j,r) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DTimeout(j,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_07 ==
+            \/ (\E x \in Xids : Cqe(x) /\ SFollow)
+            \/ (\E x \in Xids : DRecvNotice(x) /\ SFollow)
+            \/ (\E i \in Inst : Resume(i) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_08 ==
+            \/ (\E p \in Pages : PDrainLibFail(p) /\ SFollow)
+            \/ (\E x \in Xids : DBadLen(x) /\ SFollow)
+            \/ (\E j \in Inst, r \in Rq : DSinfoBadLen(j,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_Message_09 ==
+            \/ (\E x \in Xids : PSubmit(x) /\ SFollow)
+            \/ (\E x \in Xids : PCancelReg(x) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_P_01 ==
+            \/ (\E r \in Rq : RRecvReply(r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PPoll(i,r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PSentDone(i,r) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_P_02 ==
+            \/ (\E i \in Inst, r \in Rq : PExpDone(i,r) /\ SFollow)
+            \/ (\E i \in Inst, r \in Rq : PRelease(i,r) /\ SFollow)
+            \/ (\E i \in Inst : Hang(i) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_P_03 ==
+            \/ (\E j \in Inst : RecvHello(j) /\ SFollow)
+            \/ (\E j \in Inst, i \in Inst : Teardown(j,i) /\ SFollow)
+            \/ (\E x \in Xids : XRecvRel(x) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_P_04 ==
+            \/ (\E x \in Xids : HwIssue(x) /\ SFollow)
+            \/ (\E x \in Xids : HwStop(x) /\ SFollow)
+            \/ (\E x \in Xids : LibFailRet(x) /\ SFollow)
+
+<1> DEFINE V22_NextChunk_P_05 ==
+            \/ (Done /\ SFollow)
+
+<1>C000000000000000000001.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_B2_01 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PHit, Step_PAllocPrefix, Step_PNoPrefix, SMTT(5)
+ DEF V22_NextChunk_B2_01, Step_PHit, Step_PAllocPrefix, Step_PNoPrefix
+
+<1>C000000000000000000002.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_B2_02 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PSeal, Step_PDedup, Step_SPrefixLand, SMTT(5)
+ DEF V22_NextChunk_B2_02, Step_PSeal, Step_PDedup, Step_SPrefixLand
+
+<1>C000000000000000000003.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_B2_03 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_SPrefixPoll, Step_SEvict, Step_FlushAll, SMTT(5)
+ DEF V22_NextChunk_B2_03, Step_SPrefixPoll, Step_SEvict, Step_FlushAll
+
+<1>C00000000000000000004.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_D_01 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_DLanded, Step_DRecvSinfo, Step_DLaunchNext, SMTT(5)
+ DEF V22_NextChunk_D_01, Step_DLanded, Step_DRecvSinfo, Step_DLaunchNext
+
+<1>C00000000000000000005.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_D_02 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_DGrow, Step_DInband, Step_DRecvNopost, SMTT(5)
+ DEF V22_NextChunk_D_02, Step_DGrow, Step_DInband, Step_DRecvNopost
+
+<1>C00000000000000000006.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_D_03 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PagePoll, Step_DrainTimeout, Step_DrainDone, SMTT(5)
+ DEF V22_NextChunk_D_03, Step_PagePoll, Step_DrainTimeout, Step_DrainDone
+
+<1>C00000000000000000007.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_D_04 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_Evict, Step_StreamLand, Step_Unquarantine, SMTT(5)
+ DEF V22_NextChunk_D_04, Step_Evict, Step_StreamLand, Step_Unquarantine
+
+<1>C00000000000000000008.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_D_05 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_KLaunchWG, SMTT(5)
+ DEF V22_NextChunk_D_05, Step_KLaunchWG
+
+<1>C0000000000000000000000009.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Kernel_01 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_KLaunch, Step_KLand, Step_KDone, SMTT(5)
+ DEF V22_NextChunk_Kernel_01, Step_KLaunch, Step_KLand, Step_KDone
+
+<1>C00000000000000000000000010.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_01 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_Arrive, Step_RTimeout, Step_PRecvReq, SMTT(5)
+ DEF V22_NextChunk_Message_01, Step_Arrive, Step_RTimeout, Step_PRecvReq
+
+<1>C00000000000000000000000011.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_02 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PPost, Step_PSentFail, Step_PExpose, SMTT(5)
+ DEF V22_NextChunk_Message_02, Step_PPost, Step_PSentFail, Step_PExpose
+
+<1>C00000000000000000000000012.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_03 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PAbort, Step_PTimeout, Step_PNoPost, SMTT(5)
+ DEF V22_NextChunk_Message_03, Step_PAbort, Step_PTimeout, Step_PNoPost
+
+<1>C00000000000000000000000013.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_04 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_DRecvReq, Step_DXferFailed, Step_DReadDone, SMTT(5)
+ DEF V22_NextChunk_Message_04, Step_DRecvReq, Step_DXferFailed, Step_DReadDone
+
+<1>C00000000000000000000000014.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_05 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_DReadFail, Step_DRelUnneeded, Step_DFinish, SMTT(5)
+ DEF V22_NextChunk_Message_05, Step_DReadFail, Step_DRelUnneeded, Step_DFinish
+
+<1>C00000000000000000000000015.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_06 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_DFinishOvl, Step_DAbort, Step_DTimeout, SMTT(5)
+ DEF V22_NextChunk_Message_06, Step_DFinishOvl, Step_DAbort, Step_DTimeout
+
+<1>C00000000000000000000000016.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_07 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_Cqe, Step_DRecvNotice, Step_Resume, SMTT(5)
+ DEF V22_NextChunk_Message_07, Step_Cqe, Step_DRecvNotice, Step_Resume
+
+<1>C00000000000000000000000017.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_08 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PDrainLibFail, Step_DBadLen, Step_DSinfoBadLen, SMTT(5)
+ DEF V22_NextChunk_Message_08, Step_PDrainLibFail, Step_DBadLen, Step_DSinfoBadLen
+
+<1>C00000000000000000000000018.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_Message_09 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PSubmit, Step_PCancelReg, SMTT(5)
+ DEF V22_NextChunk_Message_09, Step_PSubmit, Step_PCancelReg
+
+<1>C00000000000000000019.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_P_01 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_RRecvReply, Step_PPoll, Step_PSentDone, SMTT(5)
+ DEF V22_NextChunk_P_01, Step_RRecvReply, Step_PPoll, Step_PSentDone
+
+<1>C00000000000000000020.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_P_02 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_PExpDone, Step_PRelease, Step_Hang, SMTT(5)
+ DEF V22_NextChunk_P_02, Step_PExpDone, Step_PRelease, Step_Hang
+
+<1>C00000000000000000021.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_P_03 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_RecvHello, Step_Teardown, Step_XRecvRel, SMTT(5)
+ DEF V22_NextChunk_P_03, Step_RecvHello, Step_Teardown, Step_XRecvRel
+
+<1>C00000000000000000022.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_P_04 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_HwIssue, Step_HwStop, Step_LibFailRet, SMTT(5)
+ DEF V22_NextChunk_P_04, Step_HwIssue, Step_HwStop, Step_LibFailRet
+
+<1>C00000000000000000023.
+ ASSUME Sizes, Location, Design
+ PROVE PinInv /\ V22_NextChunk_P_05 => PinInv'
+ BY ONLY Sizes, Location, Design, Step_Done, SMTT(5)
+ DEF V22_NextChunk_P_05, Step_Done
+
+<1>C0000000000024.
+ ASSUME Sizes, Location, Design
+ PROVE
+                             PinInv /\ NextB2 => PinInv'
+ BY ONLY Sizes, Location, Design, <1>C000000000000000000001, <1>C000000000000000000002, <1>C000000000000000000003, SMTT(5)
+ DEF NextB2, V22_NextChunk_B2_01, V22_NextChunk_B2_02, V22_NextChunk_B2_03
+
+<1>C000000000025.
+ ASSUME Sizes, Location, Design
+ PROVE
+                            PinInv /\ NextD => PinInv'
+ BY ONLY Sizes, Location, Design, <1>C00000000000000000004, <1>C00000000000000000005, <1>C00000000000000000006, <1>C00000000000000000007, <1>C00000000000000000008, SMTT(5)
+ DEF NextD, V22_NextChunk_D_01, V22_NextChunk_D_02, V22_NextChunk_D_03, V22_NextChunk_D_04, V22_NextChunk_D_05
+
+<1>C00000000000000026.
+ ASSUME Sizes, Location, Design
+ PROVE
+                                 PinInv /\ NextKernel => PinInv'
+ BY ONLY Sizes, Location, Design, <1>C0000000000000000000000009, SMTT(5)
+ DEF NextKernel, V22_NextChunk_Kernel_01
+
+<1>C000000000000000027.
+ ASSUME Sizes, Location, Design
+ PROVE
+                                  PinInv /\ NextMessage => PinInv'
+ BY ONLY Sizes, Location, Design, <1>C00000000000000000000000010, <1>C00000000000000000000000011, <1>C00000000000000000000000012, <1>C00000000000000000000000013, <1>C00000000000000000000000014, <1>C00000000000000000000000015, <1>C00000000000000000000000016, <1>C00000000000000000000000017, <1>C00000000000000000000000018, SMTT(5)
+ DEF NextMessage, V22_NextChunk_Message_01, V22_NextChunk_Message_02, V22_NextChunk_Message_03, V22_NextChunk_Message_04, V22_NextChunk_Message_05, V22_NextChunk_Message_06, V22_NextChunk_Message_07, V22_NextChunk_Message_08, V22_NextChunk_Message_09
+
+<1>C000000000028.
+ ASSUME Sizes, Location, Design
+ PROVE
+                            PinInv /\ NextP => PinInv'
+ BY ONLY Sizes, Location, Design, <1>C00000000000000000019, <1>C00000000000000000020, <1>C00000000000000000021, <1>C00000000000000000022, <1>C00000000000000000023, SMTT(5)
+ DEF NextP, V22_NextChunk_P_01, V22_NextChunk_P_02, V22_NextChunk_P_03, V22_NextChunk_P_04, V22_NextChunk_P_05
+
+<1>2. QED
+ BY ONLY Sizes, Design, <1>1, NextFamilies, <1>C000000000028, <1>C000000000025, <1>C000000000000000027, <1>C00000000000000026, <1>C0000000000024, PTL DEF NextFamilies
+
+====

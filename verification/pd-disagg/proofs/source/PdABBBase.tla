@@ -1,0 +1,3 @@
+---- MODULE PdABBBase ----
+EXTENDS PdPBase
+====

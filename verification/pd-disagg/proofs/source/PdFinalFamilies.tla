@@ -1,0 +1,78 @@
+---- MODULE PdFinalFamilies ----
+EXTENDS PdPBase
+
+NextP ==
+ \/ (\E r \in Rq : RRecvReply(r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PPoll(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PSentDone(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PExpDone(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PRelease(i,r) /\ SFollow)
+ \/ (\E i \in Inst : Hang(i) /\ SFollow)
+ \/ (\E j \in Inst : RecvHello(j) /\ SFollow)
+ \/ (\E j \in Inst, i \in Inst : Teardown(j,i) /\ SFollow)
+ \/ (\E x \in Xids : XRecvRel(x) /\ SFollow)
+ \/ (\E x \in Xids : HwIssue(x) /\ SFollow)
+ \/ (\E x \in Xids : HwStop(x) /\ SFollow)
+ \/ (\E x \in Xids : LibFailRet(x) /\ SFollow)
+ \/ (Done /\ SFollow)
+
+NextD ==
+ \/ (\E j \in Inst, r \in Rq : DLanded(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DRecvSinfo(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DLaunchNext(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DGrow(j,r) /\ SFollow)
+ \/ (\E x \in Xids : DInband(x) /\ SFollow)
+ \/ (\E x \in Xids : DRecvNopost(x) /\ SFollow)
+ \/ (\E p \in Pages : PagePoll(p) /\ SFollow)
+ \/ (\E p \in Pages : DrainTimeout(p) /\ SFollow)
+ \/ (\E p \in Pages : DrainDone(p) /\ SFollow)
+ \/ (\E s \in Pages : Evict(s) /\ SFollow)
+ \/ (\E p \in Pages : StreamLand(p) /\ SFollow)
+ \/ (\E p \in Pages : Unquarantine(p) /\ SFollow)
+ \/ (\E i \in Inst, s \in KSlots, r \in Rq, p \in Pages : KLaunchWG(i,s,r,p) /\ SFollow)
+
+NextMessage ==
+ \/ (\E r \in Rq, i \in PInst, j \in DInst : Arrive(r,i,j) /\ SFollow)
+ \/ (\E r \in Rq : RTimeout(r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PRecvReq(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PPost(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PSentFail(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PExpose(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PAbort(i,r) /\ SFollow)
+ \/ (\E i \in Inst, r \in Rq : PTimeout(i,r) /\ SFollow)
+ \/ (\E i \in Inst : PNoPost(i) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DRecvReq(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DXferFailed(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DReadDone(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DReadFail(j,r) /\ SFollow)
+ \/ (\E j \in Inst : DRelUnneeded(j) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DFinish(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DFinishOvl(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DAbort(j,r) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DTimeout(j,r) /\ SFollow)
+ \/ (\E x \in Xids : Cqe(x) /\ SFollow)
+ \/ (\E x \in Xids : DRecvNotice(x) /\ SFollow)
+ \/ (\E i \in Inst : Resume(i) /\ SFollow)
+ \/ (\E p \in Pages : PDrainLibFail(p) /\ SFollow)
+ \/ (\E x \in Xids : DBadLen(x) /\ SFollow)
+ \/ (\E j \in Inst, r \in Rq : DSinfoBadLen(j,r) /\ SFollow)
+ \/ (\E x \in Xids : PSubmit(x) /\ SFollow)
+ \/ (\E x \in Xids : PCancelReg(x) /\ SFollow)
+
+NextKernel ==
+ \/ (\E i \in Inst, s \in KSlots, rows \in SUBSET Rq : KLaunch(i,s,rows) /\ SFollow)
+ \/ (\E i \in Inst, s \in KSlots : KLand(i,s) /\ SFollow)
+ \/ (\E i \in Inst, s \in KSlots : KDone(i,s) /\ SFollow)
+
+NextB2 ==
+ \/ (\E i \in PInst, r \in Rq, p \in SPages : PHit(i,r,p))
+ \/ (\E i \in PInst, r \in Rq, p \in SPages : PAllocPrefix(i,r,p))
+ \/ (\E i \in PInst, r \in Rq : PNoPrefix(i,r))
+ \/ (\E i \in PInst, r \in Rq : PSeal(i,r))
+ \/ (\E i \in PInst, r \in Rq, q \in SPages : PDedup(i,r,q))
+ \/ (\E p \in SPages : SPrefixLand(p))
+ \/ (\E p \in SPages : SPrefixPoll(p))
+ \/ (\E p \in SPages : SEvict(p))
+ \/ (\E i \in PInst : FlushAll(i))
+
+====
