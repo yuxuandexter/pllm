@@ -40,17 +40,32 @@ curl http://127.0.0.1:9100/pd_stats   # inspect live PdLedger 5-state page and g
 ### 2. Check the Formal Specification, Trace & Proofs
 
 ```bash
-# Verify that Python runtime traces conform step-by-step to PdCore.tla and reject mutated bugs
+# Check the example runtime trace with the independent Python descriptor observer and test that
+# corrupted or missing observations are rejected (Python only, no TLA+). The optional TLC conformance
+# check against the trace model is verification/pd-disagg/trace/check_rejected.py
+# (see verification/pd-disagg/trace/README.md for its status)
 python3 verification/pd-disagg/trace/check.py --out "$PWD/check-output"
 
-# Run bounded TLC model checking on PdCore.tla (64 actions, 54 inductive invariants)
+# Run bounded TLC model checking on PdCore.tla (64 actions, 6 of which cannot occur under Design;
+# the proof's inductive invariant has 54 conjuncts)
 TLA2TOOLS_JAR=/path/to/tla2tools.jar python3 verification/pd-disagg/spec/check.py --out "$PWD/model-output"
 
 # Check the packaged TLAPS proofs: static checks, one module, or a full parallel recheck
 verification/pd-disagg/proofs/verify.sh --static
 verification/pd-disagg/proofs/verify.sh --module PdABBQBase --out proof-review
+# --slice-large requires the exact recorded toolchain build; with any other TLAPS build, use
+# whole-module mode (--module, or --all --jobs 16 without --slice-large)
 verification/pd-disagg/proofs/verify.sh --all --jobs 16 --slice-large --out proof-all
 ```
+
+The TLAPS proof shows `Spec => []Safety` for the design model `PdCore`, under the
+assumptions `Sizes` and `Design`. It is a safety theorem and contains no liveness
+property. It does not prove that the Python implementation refines the model; the
+implementation is linked to the model by runtime precondition checks, mutation tests
+and trace checks. Some obligations are sensitive to machine load: rerun a failed module
+alone with a larger `--stretch` before treating it as a proof failure. See
+[`verification/pd-disagg/proofs/README.md`](verification/pd-disagg/proofs/README.md)
+for the assumptions, results and known reproducibility issues.
 
 ## Architecture
 
@@ -60,7 +75,7 @@ In disaggregated Prefill-Decode serving, one-sided GPUDirect RDMA transfers, sha
 
 - **`Isolation`:** Active pages never jump straight back to `FREE`; canceled or evicted pages enter `DRAINING` first (`gen + 1` on reuse), while unstopped RDMA timeouts isolate in `QUARANTINED` so late RDMA writes never touch new requests.
 - **`Integrity`:** Prefix-cache publish and Decode attention launch require verified `(page, gen)` ownership, completed transfer visibility, and checked GPU KV tensor byte offsets.
-- **`Finality`:** Timed-out transfers without hardware stop evidence fail the waiting request immediately rather than hanging the Decode loop.
+- **`Finality`:** Timed-out transfers without hardware stop evidence fail the waiting request immediately rather than hanging the Decode loop. This is runtime behavior; the proved theorem covers safety only and does not include this property.
 - **`Conservation`:** Every physical page is strictly accounted for across the five states with zero silent leaks.
 
 ---
