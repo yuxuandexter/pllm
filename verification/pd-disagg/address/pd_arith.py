@@ -1,4 +1,4 @@
-"""Symbolic KV address arithmetic and calibrated negative controls for pLLM.
+"""Symbolic KV address arithmetic and calibrated negative controls for veriserve.
 
 The layout is (2, num_layers, pool_pages, page_size, kv_heads, head_dim).
 The model uses mathematical integers and page sizes 1, 16, and 64. Private
@@ -836,7 +836,7 @@ def main():
     parser.add_argument("--out", type=Path, help="write results.json and RESULTS.md to this directory")
     args = parser.parse_args()
     only = args.only.split(",") if args.only else None
-    R = Runner("pLLM address arithmetic (pd_arith.py)", only)
+    R = Runner("veriserve address arithmetic (pd_arith.py)", only)
 
     lemma_rows(R)
     lemma_merge(R)

@@ -77,7 +77,7 @@ In disaggregated Prefill-Decode serving, one-sided GPUDirect RDMA transfers, sha
 - **`Isolation`:** Active pages never jump straight back to `FREE`; canceled or evicted pages enter `DRAINING` first (`gen + 1` on reuse), while unstopped RDMA timeouts isolate in `QUARANTINED` so late RDMA writes never touch new requests.
 - **`Integrity`:** Prefix-cache publish and Decode attention launch require verified `(page, gen)` ownership, completed transfer visibility, and checked GPU KV tensor byte offsets.
 - **`Finality`:** Timed-out transfers without hardware stop evidence fail the waiting request immediately rather than hanging the Decode loop. This is runtime behavior; the proved theorem covers safety only and does not include this property.
-- **`Conservation`:** Every physical page is strictly accounted for across the five states with zero silent leaks.
+- **`Conservation`:** Every physical page is accounted for across the five states. The proved property covers quiescence: with no active request and empty in-flight ledgers, each page is `FREE`, `QUARANTINED`, or an unreferenced `SHARED` page. Quarantined pages stay out of circulation by design.
 
 ---
 

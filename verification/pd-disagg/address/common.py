@@ -1,4 +1,4 @@
-"""Verdict machinery for the pLLM arithmetic model.
+"""Verdict machinery for the veriserve arithmetic model.
 
 Every property is a function build(mut, mode, nmax, *cfg) -> Query with
   req   : Requires (ledger / glue postconditions and host facts the descriptor may assume)
