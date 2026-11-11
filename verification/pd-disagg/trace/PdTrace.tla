@@ -1,5 +1,5 @@
 ------------------------------ MODULE PdTrace ------------------------------
-\* observed: PdCore 05e988a5. Explicit DGrow, W/StreamFIFO, SFollow and PrefixSharing prefix actions.
+\* observed: PdCore. Explicit DGrow, W/StreamFIFO, SFollow and PrefixSharing prefix actions.
 \* P prefill remains the model stream; raw P pin lifetimes are checked by observe.
 EXTENDS PdCore, Sequences, TLC
 
@@ -7,10 +7,10 @@ CONSTANTS TraceLog, MaxSilent   \* MaxSilent: kept for the cfg format; no silent
 \* compatibility: every use of the log goes through TLog, a zero-arity constant-level definition, which TLC evaluates ONCE
 \* (when it processes the constant definitions) and keeps as a value.  The cfg override "TraceLog <- Log" alone is
 \* re-evaluated at every access: each TraceLog[l] rebuilt the whole Log literal (O(events) per access; the ASSUME
-\* below was O(events^2), README §17).  TLog = TraceLog by definition: same states, same verdicts.
+\* below was O(events^2)).  TLog = TraceLog by definition: same states, same verdicts.
 TLog == TraceLog
 
-VARIABLES l, todo, fl, la, kid   \* la: the PdCore action (or check) of the last step (coverage, README §4)
+VARIABLES l, todo, fl, la, kid   \* la: the PdCore action (or check) of the last step (coverage)
 tvars == <<vars, l, todo, fl, la, kid>>
 
 \* @type: Set(Seq(Str));

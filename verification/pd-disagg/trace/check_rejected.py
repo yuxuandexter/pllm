@@ -21,8 +21,8 @@ import extract_rejected_prefix
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
 MODEL=HERE/'PdCore.tla'
-PIN='971aec4f4aad6b831081315628296b5d86809fe21aa55eddd938bb04b92ee82e'
-TRACEPIN='b6098492f6cf83728590fa230342f6184ccc7ed2d8cde72f75af1115454f124d'
+PIN='7722d20f1fc2119793970d490c732cf3ef5439dd4a690f030d3591811597c9ce'
+TRACEPIN='248eeeb0091559ef5bd6c55b6e3a55f49c55051151c6c44fe1ca68a1733cd43e'
 
 class RejectError(ValueError):
     def __init__(self, code, detail):

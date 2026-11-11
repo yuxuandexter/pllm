@@ -2079,7 +2079,7 @@ THEOREM Part_PPost_02_01 ==
           \* Unquar：到已拆除的对端不能再发（连接被拒，op 立即以失败停下、不落地）
           /\ hw' = IF PReg THEN hw ELSE [hw EXCEPT ![m.x] = IF Torn(m.x) THEN "stop" ELSE "fly"]
           /\ hok' = IF PReg THEN hok ELSE [hok EXCEPT ![m.x] = FALSE]
-          /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* RB-002：x 带的 token 数 = P 记下的数
+          /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* transfer-length consistency：x 带的 token 数 = P 记下的数
           /\ led' = [led EXCEPT ![p] = @ \cup {m.x}]
           /\ ph' = [ph EXCEPT ![i][r] = IF PReg THEN "reg" ELSE "sent"] /\ rx' = [rx EXCEPT ![i][r] = m.x]
           \* 变异 noticeBeforeCompletion（Mooncake#3406）：发出 WRITE 就发成功 notice（pe = 0：没看到完成事件）；PReg 下在 PSubmit 里发

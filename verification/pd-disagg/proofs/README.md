@@ -116,6 +116,9 @@ All **226 modules** passed strict TLAPS checking: **516,973 obligations**, with
 discharged by a backend prover and 445,740 were classified trivial by tlapm. All 230
 `.tla` files, including the two pinned models, are unchanged copies of the final
 source tree; their hashes are in `source/SHA256SUMS`.
+After the recorded runs, the pinned sources were edited in comments only: with comments
+removed, the text of every source file, token positions included, is identical to the
+text that was checked.
 
 The recorded results were not all produced with `--nofp`: 19 modules were checked
 with `--nofp`, and 207 were checked with tlapm's fingerprint cache enabled in its

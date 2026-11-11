@@ -1,5 +1,5 @@
 ---- MODULE MC_pd_ind ----
-\* Inductive strengthening for the PD ledger design model PdCore: Apalache single-step induction (the contract §2.3).
+\* Inductive strengthening for the PD ledger design model PdCore: Apalache single-step induction.
 \*   init: --cinit=<C> --init=Init    --inv=IndInv --length=0
 \*   step: --cinit=<C> --init=IndInit --inv=IndInv --length=1
 \*   safe: --cinit=<C> --init=IndInit --inv=Safety --length=0
@@ -16,7 +16,7 @@ CBase == /\ PrefixSharing = FALSE /\ SPP = 0
          /\ Unquar = FALSE /\ PRel = TRUE /\ BadLen = TRUE /\ Ovl = TRUE /\ KR = 1 /\ PReg = TRUE /\ Mut = "none" /\ Faults = TRUE /\ MaxFail = 1
 CPush == CBase /\ Mode = "push" /\ NPI = 1 /\ NDI = 1 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 2 /\ PS = 1 /\ MX = 2
 CPull == CBase /\ Mode = "pull" /\ NPI = 1 /\ NDI = 1 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 2 /\ PS = 1 /\ MX = 2
-\* scale + 1 (the contract §3): page_size 2 (tail pages), and 1P2D
+\* scale + 1: page_size 2 (tail pages), and 1P2D
 CPushPS2 == CBase /\ Mode = "push" /\ NPI = 1 /\ NDI = 1 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 2 /\ PS = 2 /\ MX = 2
 CPullPS2 == CBase /\ Mode = "pull" /\ NPI = 1 /\ NDI = 1 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 2 /\ PS = 2 /\ MX = 2
 CPush12 == CBase /\ Mode = "push" /\ NPI = 1 /\ NDI = 2 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 3 /\ PS = 1 /\ MX = 2

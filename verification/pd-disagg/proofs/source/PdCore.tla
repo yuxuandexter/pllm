@@ -1,10 +1,10 @@
 ---------------------------- MODULE PdCore ----------------------------
 (***************************************************************************)
-(* certus-pd B 线：我们自己的 PD 分离 KV 协议的设计模型（S3 原型，S2 冻结前）。 *)
-(* 依据 cases/certus-pd/PLAN.md v3 §5（页状态、两种需要"已停"证据的转换、在途   *)
+(* PD ledger：我们自己的 PD 分离 KV 协议的设计模型。                            *)
+(* 依据页生命周期设计（页状态、两种需要"已停"证据的转换、在途                   *)
 (* 账本含本地 CUDA 流、xfer 记录与单调 id、代际、隔离与第一步兜底、推拉表      *)
-(* §5.3）和 §3 / s0/pd-class/ENVIRONMENT.md 的环境前提（最宽读法）。          *)
-(* 起点：certus-serve 的单机账本 CoreLedger3（ledger/inflight 思路），这里扩成    *)
+(* ）和环境前提（最宽读法）。                                                 *)
+(* 起点：单机账本（ledger/inflight 思路），这里扩成                               *)
 (* "位置 x 搬运者 x 代际"；单机账本本身（共享前缀链、表行）不重复建模。        *)
 (*                                                                         *)
 (* 形状：                                                                  *)
@@ -26,7 +26,7 @@
 (*     完成（CUDA event 语义）。                                              *)
 (*  A3 拉模式下发起方 D 的 READ 完成事件 ⇒ 数据已放进 D 的页且 P 侧不再被读     *)
 (*     （H-complete 对 READ 的读法）。                                         *)
-(*  推模式的证据链（D-071：push 为主，对齐 SGLang + Mooncake）拆成三个读法开关： *)
+(*  推模式的证据链（push 为主，对齐 SGLang + Mooncake）拆成三个读法开关： *)
 (*   HComplete："narrow" = P 的 WRITE 完成事件 ⇒ 数据已放置在 D（hw = stop）；  *)
 (*              "widest" = 只说明源已读完、对端网卡已确认（hw = issued 即可）。 *)
 (*   HOrder："strict" = P 在完成事件之后发出的 notice 送达时，数据已放置；     *)
@@ -37,22 +37,22 @@
 (*            或 "inband"（D 本地的带内完成，A5）；Flush = D 认定落地后、发射  *)
 (*            decode 前做 GPUDirect flush（只覆盖已放置的写）。               *)
 (*  A5 PushEv = "inband"：D 能在本地看到"数据已放置"的带内完成（同一 QP 上      *)
-(*     WRITE_WITH_IMM 之类，关闭宽松排序、逐路径取证）；这是 W0 要测的前提。    *)
+(*     WRITE_WITH_IMM 之类，关闭宽松排序、逐路径取证）；这是需要实测确认的前提。 *)
 (*  A6 H-layout、H-lib、H-path 不建模。TP = 1。                               *)
 (*  A7 Unquar = TRUE（可选，第二步）：Teardown(j, i) 之后，j 与旧实例 i 之间的  *)
 (*     全部 op 停下、不再落地，之后 i 的新 op 一律被拒（QP 已 ERR/销毁、CQ 已排空、*)
-(*     重试队列已清空、拒绝旧实例重连，PLAN §5.2）；W0 的 H-revoke 实验要证实它。*)
+(*     重试队列已清空、拒绝旧实例重连，隔离规则）；H-revoke 实验要证实它。       *)
 (* 写法照 Apalache：变量、常量带类型标注，不用 CHOOSE、不用递归。            *)
 (*                                                                         *)
-(* B1 ③（PLAN v4 §15.3，D-089）：kernel 读进核心。每个实例有 KR 个步槽；     *)
+(* KernelReadPins：kernel 读进核心。每个实例有 KR 个步槽；              *)
 (*  KLaunch(i, s, rows) 由核心做发射核对并算出读集合 krs（一个步一条钉，不按   *)
-(*  页记 sled，§15.4 #5），KLand 是 GPU 做完（环境），KDone 是事件查询为真后   *)
+(*  页记 sled），KLand 是 GPU 做完（环境），KDone 是事件查询为真后             *)
 (*  核心去钉（= step_done，E1）。被钉的页不换状态（不回 Free、不换主人、不解除 *)
 (*  隔离）。attention kernel 不写 KV（store.cu 按 out_loc 写，归现有的本地流 op）*)
 (*  A8 本地 kernel 步最终做完（KLand 弱公平）；完成顺序不限（最宽）。           *)
-(* main 加活（11-05 20:0xZ）：PReg = p_post 只登记、p_begin 才提交（PSubmit），  *)
+(* 提交与登记分离：PReg = p_post 只登记、p_begin 才提交（PSubmit），             *)
 (*  登记态可取消（PCancelReg，停证据 = 从未提交，同 nopost）。                  *)
-(* B 修订（D-109 ① R-F1、D-106 PReg 超时修法；b-model 11-06）：                 *)
+(* decode growth and cancellation（① 解码加页、PReg 超时修法）：    *)
 (*  DGrow(j, r)：D 解码时加页（glue allocate_paged → ledger.alloc）。守卫 = 核心的 *)
 (*   D 分配窗口在暴露之后的那一支（x 已 VISIBLE、主人 LIVE）= 记录 run / ovl。加页 *)
 (*   不暴露、不进 RDMA / 本地流账本；之后每一步都钉住它（读集合 = 这一代在本实例   *)
@@ -61,7 +61,7 @@
 (*  A9 流内 FIFO：同一实例的 kernel 步在一条流上按发射顺序执行；后发射的步开始读  *)
 (*   时，先发射的步的 store 写已完成（核心 rla 一支、glue overlap 循环先发射 k+2 再 *)
 (*   收 k+1 的前提）。只用在加页的数据真值上；步的完成顺序照旧不限。             *)
-(*  PReg 超时修法（B1gPEnd.tla 的 SpecB）进默认 Spec：PEnd 先取消登记态的 x；P 页 *)
+(*  PReg 超时修法进默认 Spec：PEnd 先取消登记态的 x；P 页                         *)
 (*   账本里有登记态的 x 时 DrainTimeout 不使能（由 PCancelReg 放页）。QuarNoReg。 *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
@@ -82,15 +82,15 @@ CONSTANTS
   \* @type: Bool;
   Unquar,    \* 设计（可选，第二步）：拆掉到旧对端实例的全部 QP 后解除隔离
   \* @type: Bool;
-  PRel,      \* RB-20261105-001（开关）：P 的请求可以在它的 x 还没停时正常结束（glue：p_post 之后立刻 release），源页进 Drain(h)
+  PRel,      \* source-release ordering（开关）：P 的请求可以在它的 x 还没停时正常结束（glue：p_post 之后立刻 release），源页进 Drain(h)
   \* @type: Bool;
-  BadLen,    \* RB-20261105-002（开关，环境）：P 实际算出的 token 数可以和 D 的计划不同（输入不一致，Cloudflare 类）
+  BadLen,    \* transfer-length consistency（开关，环境）：P 实际算出的 token 数可以和 D 的计划不同（输入不一致，Cloudflare 类）
   \* @type: Bool;
-  Ovl,       \* RB-20261105-004（开关）：overlap 调度——D 的请求在包含它的下一步已发射、还在跑时就成功结束，页进 Drain(h)
+  Ovl,       \* overlapped-finish drain（开关）：overlap 调度——D 的请求在包含它的下一步已发射、还在跑时就成功结束，页进 Drain(h)
   \* @type: Int;
-  KR,        \* B1：每个实例的 kernel 步槽数（同时在途的步数上界；0 = 不建 kernel 读）
+  KR,        \* KernelReadPins：每个实例的 kernel 步槽数（同时在途的步数上界；0 = 不建 kernel 读）
   \* @type: Bool;
-  PReg,      \* main 加活（开关）：P 的 p_post 只登记（可取消），p_begin 才把 WRITE 交给传输库
+  PReg,      \* 提交与登记分离（开关）：P 的 p_post 只登记（可取消），p_begin 才把 WRITE 交给传输库
   \* @type: Str;
   Mut,       \* "none" 或一个变异体（见 Mutants）
   \* @type: Bool;
@@ -119,40 +119,40 @@ CONSTANTS
   SPP        \* P prefix slots per instance; disjoint from suffix Pages
 
 \* 变异体（Mut）：push 特有的先列
-\*  timeoutRelease          SGLang D-034 / vLLM 租约到期：超时就放页（不隔离）
+\*  timeoutRelease          SGLang / vLLM 租约到期：超时就放页（不隔离）
 \*  noticeBeforeCompletion  Mooncake#3406：P 发出 WRITE 就发成功 notice，不等完成事件
-\*  failedAsDrained         BUG-KV-009：库返回失败（−1）就当作已排空，发 notice、放源页
-\*  sourceFreedBeforeAck    BUG-KV-027（pull）：P 不等 ReleaseSource 就放源页（租约到期或收到 abort）
-\*  noGeneration            L44：请求级消息不按代过滤
-\*  inflightResetOnReuse    L45：槽开始新一代时清掉这个槽的在途记账
+\*  failedAsDrained         库返回失败（−1）就当作已排空，发 notice、放源页
+\*  sourceFreedBeforeAck    （pull）P 不等 ReleaseSource 就放源页（租约到期或收到 abort）
+\*  noGeneration            请求级消息不按代过滤
+\*  inflightResetOnReuse    槽开始新一代时清掉这个槽的在途记账
 \*  sealPartial             只写了部分 token 的页也封存成共享
 \*  unquarantineOnRehandshake  看到对端重新握手就解除隔离（不拆 QP）
 \*  sendEarly               sglang#41395：prefill 还没确认完成就发送
 \*  leakOnAbort             D abort 时账本已空也不放页（泄漏，校准页守恒）
-\*  noDeadline              CT-LIVE 负校准：路由器、P、D、Draining 页都没有期限（等证据或回复时永远等）
+\*  noDeadline              负校准：路由器、P、D、Draining 页都没有期限（等证据或回复时永远等）
 \*  noDeadlineD / noDeadlineP  只去掉 D（或 P）自己的期限和它的 Draining 期限，外加路由器期限
 \*  noDeadlineDOnly / noRouterDeadline  只去掉 D 的期限 / 只去掉路由器的期限（看哪一层期限承重）
-\*  pReleaseFree            RB-001：P 的请求在 x 还没停时结束，直接放源页（不进 Drain）
-\*  ignoreLt                RB-002：D 不核对 notice / sinfo / 带内完成里的 lt，lt ≠ 计划也认定落地
-\*  freeOnFinish            RB-004：overlap 下成功结束时直接放页，不管下一步还在跑（sled ≠ ∅）
-\*  nokFrees                D-082：把 ¬ok notice 当作已停（失败）证据，x 出账本、页放回（旧版对 U1 的取法）
-\*  B1（kernel 读）：
+\*  pReleaseFree            source-release ordering：P 的请求在 x 还没停时结束，直接放源页（不进 Drain）
+\*  ignoreLt                transfer-length consistency：D 不核对 notice / sinfo / 带内完成里的 lt，lt ≠ 计划也认定落地
+\*  freeOnFinish            overlapped-finish drain：overlap 下成功结束时直接放页，不管下一步还在跑（sled ≠ ∅）
+\*  nokFrees                把 ¬ok notice 当作已停（失败）证据，x 出账本、页放回（旧版对 U1 的取法）
+\*  KernelReadPins（kernel 读）：
 \*  kLaunchUnlanded         发射核对不看落地：D 在 wait / rd（x 还没停）、P 在 pre（prefill 写还没 E1）也可发射
 \*  kLaunchUnflushed        D 拿到落地证据（push：xst landed；pull：READ 完成）、还没 flush 就发射
 \*  kWrongGen               发射核对按 room 找页、不核代（R2 / R3 类：room 当身份），读到同一 room 旧一代的页
 \*  kFreeUnderRead          所有放页判断都不看步的钉（读着的页被放回 / 淘汰）
 \*  kQuarRelUnderRead       解除隔离（Unquar）不看步的钉
 \*  kDoneEarly              KDone 不等这一步的事件（GPU 还在读就去钉）
-\*  kDoneNeedsNext          只有发射了下一步才处理上一步的完成（主循环只在有新步时收完成；certus-serve P5 的形状）
+\*  kDoneNeedsNext          只有发射了下一步才处理上一步的完成（主循环只在有新步时收完成）
 \*  cancelSubmitted         PReg：取消时把已提交（p_begin 之后）的条目也当成未提交，放源页、回 nopost
-\*  B 修订（DGrow / PReg 超时修法）：
+\*  decode growth and cancellation（DGrow / PReg 超时修法）：
 \*  growNoRun               D 在记录还没提交（wait / rd：x 还没 VISIBLE）时也加页（核心不查 d_alloc_ok 的 VISIBLE）
 \*  growNonFree             加页取的页不必是空页（Drain / 隔离 / 共享 / 别的记录的私有页：空闲表里混进了还在用的页）
 \*  growFreeUnderPin        记录结束时放加页不看 kernel 钉
 \*  kReadUnwritten          发射时把还没有步写过的加页当成已写来读（核心不查 rd <= max(rwr, rla)）
 \*  kGrowNoFifo             写加页的步与之后读它的步不在一条流上（A9 不成立）：写在写它的步做完时才落下
-\*  pEndNoCancel            PEnd 不先取消登记态的 x（a8a92672 的行为：只登记、从未提交的源页随超时进隔离）
-\*  drainTimeoutReg         P 页账本里有登记态的 x 时 Drain 照旧超时进隔离（a8a92672 的行为）
+\*  pEndNoCancel            PEnd 不先取消登记态的 x（旧行为：只登记、从未提交的源页随超时进隔离）
+\*  drainTimeoutReg         P 页账本里有登记态的 x 时 Drain 照旧超时进隔离（旧行为）
 Mutants == {"none", "timeoutRelease", "noticeBeforeCompletion", "failedAsDrained", "sourceFreedBeforeAck",
             "noGeneration", "inflightResetOnReuse", "sealPartial", "unquarantineOnRehandshake", "sendEarly", "leakOnAbort",
             "noDeadline", "noDeadlineD", "noDeadlineP", "noDeadlineDOnly", "noRouterDeadline", "pReleaseFree", "ignoreLt", "freeOnFinish", "nokFrees",
@@ -183,7 +183,7 @@ Loc(p) == IF p <= NP THEN BaseLoc(p) ELSE 1 + (p - NP - 1) \div SWidth
 \* 请求 (r, g) 的 token 数：奇数代整页，偶数代少一个 token（PS > 1 时尾页不满；整页请求可以排在不满的请求之后，
 \* 这样"不满的页被封存后又被整页请求命中"才可达）。PS = 1 或 MG ≤ 2 时与"只有第 1 代整页"相同
 NTok(r, g) == IF PS = 1 \/ g % 2 = 1 THEN PS ELSE PS - 1
-\* RB-002：P 的 prefill 实际写下的 token 数；BadLen 时可以比计划少一个（P 的输入和 D 的计划不一致）
+\* transfer-length consistency：P 的 prefill 实际写下的 token 数；BadLen 时可以比计划少一个（P 的输入和 D 的计划不一致）
 PLens(r, g) == IF BadLen THEN {NTok(r, g), NTok(r, g) - 1} ELSE {NTok(r, g)}
 
 \* @type: (Str, Int, Int, Int, Int, Int, Int, Int, Bool) => {t: Str, fr: Int, to: Int, r: Int, g: Int, x: Int, pg: Int, pe: Int, ok: Bool};
@@ -211,7 +211,7 @@ VARIABLES
   nfail,
   \* @type: Int -> Set(Int);
   torn,     \* Unquar：j 已拆掉到这些实例的全部 QP（之后与它们之间的 RDMA 一律被拒）
-  \* ---- B1：每个实例的 kernel 步（槽 s ∈ 1..KR） ----
+  \* ---- KernelReadPins：每个实例的 kernel 步（槽 s ∈ 1..KR） ----
   \* @type: Int -> (Int -> Bool);
   kpin,     \* 账本：步 s 已发射、核心还没收到它的完成（KDone 之前，读集合里的页被钉住）
   \* @type: Int -> (Int -> Bool);
@@ -231,7 +231,7 @@ VARIABLES
   rx,       \* xfer id（0 = 无）
   \* @type: Int -> (Int -> Bool);
   rhit,     \* D：前缀命中共享页
-  \* ---- 页（PLAN §5.1） ----
+  \* ---- 页 ----
   \* @type: Int -> Str;
   pst,      \* "free" | "priv" | "shared" | "drain" | "quar"
   \* @type: Int -> Int;
@@ -254,7 +254,7 @@ VARIABLES
   prefc,    \* shared 页的引用数
   \* @type: Int -> Int;
   pqp,      \* quar 页：在等哪个对端实例
-  \* ---- xfer 记录（PLAN §5.1 xfer[id]） ----
+  \* ---- xfer 记录（xfer[id]） ----
   \* @type: Int -> Int;
   xr,
   \* @type: Int -> Int;
@@ -280,11 +280,11 @@ VARIABLES
   iv,       \* 发起方看到的："none" | "posted" | "cqe"（完成事件，已停证据）| "failret"（库返回失败或超时：
             \*   不是已停证据，句柄丢弃）| "nopost"（发起方承诺永不发出）
   \* @type: Int -> Str;
-  xst,      \* 暴露方的记录状态（PLAN 的 Posted/Landed/Failed/Revoked）："none" | "posted" | "landed" | "failed" | "revoked"
+  xst,      \* 暴露方的记录状态（Posted/Landed/Failed/Revoked）："none" | "posted" | "landed" | "failed" | "revoked"
   \* @type: Int;
   nx,       \* 下一个 xfer id（单调）
   \* @type: Int -> Int;
-  xlt,      \* RB-002：x 实际带的 token 数 lt（push：P 发出时 = 源页上 P 算出的数；pull：P 暴露时；之前为 0）
+  xlt,      \* transfer-length consistency：x 实际带的 token 数 lt（push：P 发出时 = 源页上 P 算出的数；pull：P 暴露时；之前为 0）
   \* ---- 控制面 ----
   \* @type: Set({t: Str, fr: Int, to: Int, r: Int, g: Int, x: Int, pg: Int, pe: Int, ok: Bool});
   net,
@@ -300,7 +300,7 @@ VARIABLES
 
 rtV   == <<gen, rt, rp, rd, hp, hd>>
 kV    == <<kpin, kfly, krs>>
-instV == <<alive, nfail, torn, kV>>   \* B1：kernel 步是实例级状态；只有 KLaunch / KLand / KDone 改 kV
+instV == <<alive, nfail, torn, kV>>   \* KernelReadPins：kernel 步是实例级状态；只有 KLaunch / KLand / KDone 改 kV
 recV  == <<ph, rg, rpg, rpe, rx, rhit>>
 pgV   == <<pst, pr, pgn, plt, ptl, pvis, led, sfly, sled, prefc, pqp>>
 xV    == <<xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, hw, hok, iv, xst, nx>>
@@ -428,7 +428,7 @@ Tag(r, g) == <<r, g>>
 InFl(x) == hw[x] \in {"fly", "issued"}
 Torn(x) == (xp[x] \in Inst /\ xd[x] \in torn[xp[x]]) \/ (xd[x] \in Inst /\ xp[x] \in torn[xd[x]])
 
-\* B1：页 p 在本实例某个已发射、还没 KDone 的步的读集合里（一个步一条钉）
+\* KernelReadPins：页 p 在本实例某个已发射、还没 KDone 的步的读集合里（一个步一条钉）
 KPinned(p) == \E s \in KSlots : kpin[Loc(p)][s] /\ \E e \in krs[Loc(p)][s] : e[3] = p
 \* 放页判断把钉算进在途账本（变异 kFreeUnderRead：不看钉）；解除隔离另有变异 kQuarRelUnderRead
 PinBlocks(p) == KPinned(p) /\ Mut # "kFreeUnderRead"
@@ -447,16 +447,16 @@ PageTo(p, s, q, nl, ns) ==
           /\ UNCHANGED <<pr, pgn, plt, prefc>>
 
 \* 放弃页 p（记录结束）：账本空 → Free；有在途 → Draining（abort）或 Quarantined（timeout，且有远端在途）
-\* B 修订：GiveUpToN 按给定的 RDMA 账本 nl 判（PEnd 先取消登记态的 x 之后的账本）；GiveUpTo = 用页现在的账本，与 a8a92672 相同
+\* decode growth and cancellation：GiveUpToN 按给定的 RDMA 账本 nl 判（PEnd 先取消登记态的 x 之后的账本）；GiveUpTo = 用页现在的账本，与旧行为相同
 GiveUpToN(p, how, nl) ==
   IF nl = {} /\ sled[p] = {} /\ ~PinBlocks(p) THEN (IF Mut = "leakOnAbort" /\ how = "abort" /\ IsD(Loc(p)) THEN "priv" ELSE "free")
-  ELSE IF nl = {} /\ sled[p] = {} THEN "drain"   \* B1：只剩 kernel 步的钉（本地，最终完成）：Drain，不隔离
+  ELSE IF nl = {} /\ sled[p] = {} THEN "drain"   \* KernelReadPins：只剩 kernel 步的钉（本地，最终完成）：Drain，不隔离
   ELSE IF Mut = "sourceFreedBeforeAck" /\ Mode = "pull" /\ IsP(Loc(p)) /\ sled[p] = {} THEN "free"
   ELSE IF how = "timeout" /\ nl # {} THEN (IF Mut = "timeoutRelease" THEN "free" ELSE "quar")
   ELSE "drain"
 GiveUpTo(p, how) == GiveUpToN(p, how, led[p])
 
-\* B 修订（DGrow，D-109 ①）：D 记录 (j, r) 解码时加的页 = 本实例上属于这一代、不是记录映射页 rpg 的私有页（rpg 是暴露 / 命中的
+\* decode growth and cancellation（DGrow，①）：D 记录 (j, r) 解码时加的页 = 本实例上属于这一代、不是记录映射页 rpg 的私有页（rpg 是暴露 / 命中的
 \* 那一页；加页不暴露、没有 RDMA / 本地流账本，K16）
 GrownOf(j, r) == {q \in Pages : IsD(j) /\ Loc(q) = j /\ q # rpg[j][r] /\ pst[q] = "priv" /\ pr[q] = r /\ pgn[q] = rg[j][r]}
 \* 记录结束时放加页：只看 kernel 钉。没钉 → Free，被钉 → Drain（KDone 时回 Free）。变异 growFreeUnderPin：不看钉
@@ -520,7 +520,7 @@ PRecvReq(i, r) ==
        /\ m.t = "req" /\ m.to = i /\ m.r = r /\ NewGen(i, r, m.g)
        /\ gbad' = (gbad \/ (ph[i][r] = "end" /\ m.g <= rg[i][r]))
        /\ rg' = [rg EXCEPT ![i][r] = m.g] /\ rpe' = [rpe EXCEPT ![i][r] = m.pe] /\ rx' = [rx EXCEPT ![i][r] = 0]
-       /\ led' = IF Mut = "inflightResetOnReuse"      \* L45：新一代开始时清掉这个槽的在途记账
+       /\ led' = IF Mut = "inflightResetOnReuse"      \* 新一代开始时清掉这个槽的在途记账
                  THEN [p \in Pages |-> IF Loc(p) = i THEN {x \in led[p] : xr[x] # r} ELSE led[p]] ELSE led
        /\ IF \E p \in Pages : Loc(p) = i /\ pst[p] = "free"
           THEN \E p \in Pages :
@@ -569,7 +569,7 @@ PPost(i, r) ==
                \* Unquar：到已拆除的对端不能再发（连接被拒，op 立即以失败停下、不落地）
                /\ hw' = IF PReg THEN hw ELSE [hw EXCEPT ![m.x] = IF Torn(m.x) THEN "stop" ELSE "fly"]
                /\ hok' = IF PReg THEN hok ELSE [hok EXCEPT ![m.x] = FALSE]
-               /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* RB-002：x 带的 token 数 = P 记下的数
+               /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* transfer-length consistency：x 带的 token 数 = P 记下的数
                /\ led' = [led EXCEPT ![p] = @ \cup {m.x}]
                /\ ph' = [ph EXCEPT ![i][r] = IF PReg THEN "reg" ELSE "sent"] /\ rx' = [rx EXCEPT ![i][r] = m.x]
                \* 变异 noticeBeforeCompletion（Mooncake#3406）：发出 WRITE 就发成功 notice（pe = 0：没看到完成事件）；PReg 下在 PSubmit 里发
@@ -621,7 +621,7 @@ PExpose(i, r) ==
         /\ xst' = [xst EXCEPT ![x] = "posted"]
         /\ led' = [led EXCEPT ![p] = @ \cup {x}]
         /\ ph' = [ph EXCEPT ![i][r] = "exp"] /\ rx' = [rx EXCEPT ![i][r] = x]
-        /\ net' = net \cup {Msg("sinfo", i, rpe[i][r], r, g, x, p, LtOf(i, r), FALSE)}   \* RB-002：sinfo 的 pe 字段 = lt
+        /\ net' = net \cup {Msg("sinfo", i, rpe[i][r], r, g, x, p, LtOf(i, r), FALSE)}   \* transfer-length consistency：sinfo 的 pe 字段 = lt
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rhit, pst, pr, pgn, plt, ptl, pvis, sfly, sled, prefc, pqp, xdst, hw, hok, iv, ghV>>
 
 \* pull：D 的 ReleaseSource 到了（XRecvRel 已更新 xst），源页放回 Free
@@ -634,9 +634,9 @@ PExpDone(i, r) ==
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xV, net, ghV>>
 
 \* P 结束一个活记录（abort 消息或超时）：源页按账本 Free / Draining / Quarantined，通知 D。
-\* B 修订（PReg 超时修法，D-106；= B1gPEnd.tla 的 PEndC）：记录还在登记态（x 登记了、从未交给传输库）时先按 PCancelReg 的效果
+\* decode growth and cancellation（PReg 超时修法）：记录还在登记态（x 登记了、从未交给传输库）时先按 PCancelReg 的效果
 \*   取消 x（x 出源页账本、iv → nopost、给 D 回 nopost = ABORT_ACK），再按剩下的账本放页；只有交给了传输库的 x 才让源页隔离。
-\*   变异 pEndNoCancel：不先取消（a8a92672 的行为）
+\*   变异 pEndNoCancel：不先取消（旧行为）
 PEnd(i, r, how) ==
   LET p  == rpg[i][r]
       x  == rx[i][r]
@@ -757,7 +757,7 @@ DRecvSinfo(j, r) ==
   /\ Mode = "pull" /\ IsD(j) /\ alive[j] /\ ph[j][r] = "wait"
   /\ \E m \in net :
        /\ m.t = "sinfo" /\ m.to = j /\ m.r = r /\ GenOK(j, r, m.g) /\ m.x \in Xids /\ iv[m.x] = "none"
-       /\ m.pe = NTok(r, rg[j][r]) \/ Mut = "ignoreLt"   \* RB-002：lt = D 的计划才读；否则 DSinfoBadLen
+       /\ m.pe = NTok(r, rg[j][r]) \/ Mut = "ignoreLt"   \* transfer-length consistency：lt = D 的计划才读；否则 DSinfoBadLen
        /\ gbad' = (gbad \/ m.g # rg[j][r])
        /\ LET q == rpg[j][r] IN
             /\ iv' = [iv EXCEPT ![m.x] = "posted"]
@@ -828,7 +828,7 @@ DFinish(j, r) ==
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xV, crep, gbad>>
 
 
-\* RB-004（开关 Ovl）：overlap 调度。D 的 decode op 已完成（这一步的结果已知），调度器已把包含这个请求的下一步发射出去：
+\* overlapped-finish drain（开关 Ovl）：overlap 调度。D 的 decode op 已完成（这一步的结果已知），调度器已把包含这个请求的下一步发射出去：
 \* 事件查询收掉上一步，同时发射下一步（同一标签再进 sfly），记录进 "ovl"
 DLaunchNext(j, r) ==
   /\ Ovl /\ IsD(j) /\ alive[j] /\ ph[j][r] = "run"
@@ -839,13 +839,13 @@ DLaunchNext(j, r) ==
         /\ ph' = [ph EXCEPT ![j][r] = "ovl"]
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, pst, pr, pgn, plt, ptl, pvis, led, sled, prefc, pqp, xV, net, ghV>>
 
-\* RB-004：ovl 的请求成功结束（回复成功照常）；下一步还在跑（sled 里还有它的标签）：私有页进 Drain(h)，只由 E1
+\* overlapped-finish drain：ovl 的请求成功结束（回复成功照常）；下一步还在跑（sled 里还有它的标签）：私有页进 Drain(h)，只由 E1
 \* （PagePoll，本地流完成）放回 Free；命中的共享页引用 − 1，标签留在 sled 里挡住淘汰。变异 freeOnFinish：直接放页
 DFinishOvl(j, r) ==
   /\ IsD(j) /\ alive[j] /\ ph[j][r] = "ovl"
   /\ LET q == rpg[j][r]
          g == rg[j][r]
-         G == GrownOf(j, r)   \* B 修订：加页随记录一起放
+         G == GrownOf(j, r)   \* decode growth and cancellation：加页随记录一起放
      IN /\ ph' = [ph EXCEPT ![j][r] = "end"]
         /\ dsucc' = [dsucc EXCEPT ![r][g] = TRUE]
         /\ drep' = [drep EXCEPT ![r][g] = Bump(@)]
@@ -857,7 +857,7 @@ DFinishOvl(j, r) ==
            ELSE PageToG(q, IF Mut = "freeOnFinish" THEN "free" ELSE GiveUpTo(q, "done"), 0, led[q], sled[q], G)
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xV, crep, gbad>>
 \* D 结束一个活记录（abort 或超时）：报错；push 时撤销暴露（revoke，尽力而为）；页按账本处理。
-\* B 修订：加页随记录一起放（设计里只有 run / ovl 的记录有加页；wait / rd 的其他结束路径——DXferFailed、¬ok notice 的隔离、
+\* decode growth and cancellation：加页随记录一起放（设计里只有 run / ovl 的记录有加页；wait / rd 的其他结束路径——DXferFailed、¬ok notice 的隔离、
 \*   BAD_LEN、pull 的读失败——只放记录映射的那一页，所以 DGrow 的 run 守卫承重：变异 growNoRun 在那些路径上漏页）
 DEnd(j, r, how) ==
   LET q == rpg[j][r]
@@ -897,7 +897,7 @@ Cqe(x) ==
   /\ LET ip == IF xk[x] = "wr" THEN xsrc[x] ELSE xdst[x]
          ii == Loc(ip)
      IN /\ alive[ii]
-        \* D-082 / U1：成功的完成事件在 HComplete narrow 下说明已放置；出错的完成事件不说明（之前已确认的字节可能还在放置），
+        \* U1：成功的完成事件在 HComplete narrow 下说明已放置；出错的完成事件不说明（之前已确认的字节可能还在放置），
         \* 所以 WRITE 的错误完成在 issued 时就可以出现
         /\ IF xk[x] = "wr" /\ (HComplete = "widest" \/ ~hok[x]) THEN hw[x] \in {"issued", "stop"} ELSE hw[x] = "stop"
         /\ iv' = [iv EXCEPT ![x] = "cqe"]
@@ -911,7 +911,7 @@ Cqe(x) ==
 DInband(x) ==
   /\ Mode = "push" /\ PushEv = "inband" /\ xk[x] = "wr" /\ xst[x] = "posted" /\ alive[xd[x]]
   /\ hw[x] = "stop" /\ hok[x]
-  /\ xlt[x] = xnt[x] \/ Mut = "ignoreLt"   \* RB-002：带内完成也带 lt；lt ≠ 计划走 DBadLen
+  /\ xlt[x] = xnt[x] \/ Mut = "ignoreLt"   \* transfer-length consistency：带内完成也带 lt；lt ≠ 计划走 DBadLen
   /\ xst' = [xst EXCEPT ![x] = "landed"]
   /\ EvidenceAt(xdst[x], x)
   /\ UNCHANGED <<rtV, instV, recV, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, hw, hok, iv, nx, net, ghV>>
@@ -919,10 +919,10 @@ DInband(x) ==
 \* push 暴露方 D 的证据 ②（PushEv = "notice"，SGLang/Mooncake 式）：P 的 notice(x, ok, lt)（lt 在字段 pg）。
 \* 送达时机由环境决定：HOrder = strict 时，P 在完成事件之后发的 notice（pe = 1）要等数据放置后才送达；
 \* widest 时任何时候都可送达。没在完成事件之后发的 notice（pe = 0，只有变异会发）不受 strict 保护。
-\* 两支（D-082）：
+\* 两支：
 \*  ok 支：成功且 lt = 计划 → 落地证据，x 出账本（之后 DLanded：flush、run）；成功但 lt ≠ 计划走 DBadLen。
 \*  ¬ok 支：不是已停证据（U1 按 SPEC 的保守取法定案）：x 留在账本，带 x 的页进隔离；D 的记录若还在等它，以错误结束。
-\*        变异 nokFrees：把 ¬ok 当作"已停（失败）"证据，x 出账本（684f7673 的旧行为）。
+\*        变异 nokFrees：把 ¬ok 当作"已停（失败）"证据，x 出账本（旧行为）。
 DRecvNotice(x) ==
   /\ Mode = "push" /\ PushEv = "notice" /\ xk[x] = "wr" /\ xst[x] = "posted" /\ alive[xd[x]]
   /\ \E m \in net :
@@ -976,7 +976,7 @@ PagePoll(p) ==
 DrainTimeout(p) ==
   /\ pst[p] = "drain" /\ led[p] # {} /\ alive[Loc(p)]
   /\ ~(IsD(Loc(p)) /\ NoDLD) /\ ~(IsP(Loc(p)) /\ NoDLP)
-  \* B 修订（PReg 超时修法，D-106；= B1gPEnd.tla 的 DrainTimeoutC）：P 页账本里还有登记态（从未交给传输库）的 x 时不超时进隔离：
+  \* decode growth and cancellation（PReg 超时修法）：P 页账本里还有登记态（从未交给传输库）的 x 时不超时进隔离：
   \*   记录已正常结束（PRelease 在 reg，glue 的真实顺序 p_post → release → p_begin），这页的出口是 PCancelReg（使能条件相同：
   \*   P 活着、TOk(D)），不丢出口。变异 drainTimeoutReg：照旧超时
   /\ ~(IsP(Loc(p)) /\ \E x \in led[p] : iv[x] = "reg") \/ Mut = "drainTimeoutReg"
@@ -987,14 +987,14 @@ DrainTimeout(p) ==
 
 
 \* Draining 的页账本空了就回 Free（实现里的"计数归零即释放"检查）。设计里账本只在证据动作里变空，那里已原子地
-\* 放回 Free，所以这个动作在设计里永不使能（归纳不变式 K7：drain ⇒ 账本非空）；变异 inflightResetOnReuse 靠它暴露 L45
+\* 放回 Free，所以这个动作在设计里永不使能（归纳不变式 K7：drain ⇒ 账本非空）；变异 inflightResetOnReuse 靠它暴露
 DrainDone(p) ==
-  /\ pst[p] = "drain" /\ led[p] = {} /\ sled[p] = {} /\ ~PinBlocks(p) /\ alive[Loc(p)]   \* B1：钉也是在途
+  /\ pst[p] = "drain" /\ led[p] = {} /\ sled[p] = {} /\ ~PinBlocks(p) /\ alive[Loc(p)]   \* KernelReadPins：钉也是在途
   /\ PageTo(p, "free", 0, {}, {})
   /\ UNCHANGED <<rtV, instV, recV, ptl, pvis, sfly, xV, net, ghV>>
 \* 淘汰共享页：没有引用、没有在途读
 LegacyEvict(s) ==
-  /\ pst[s] = "shared" /\ prefc[s] = 0 /\ led[s] = {} /\ sled[s] = {} /\ ~PinBlocks(s) /\ alive[Loc(s)]   \* B1：被 kernel 读着的共享页不淘汰
+  /\ pst[s] = "shared" /\ prefc[s] = 0 /\ led[s] = {} /\ sled[s] = {} /\ ~PinBlocks(s) /\ alive[Loc(s)]   \* KernelReadPins：被 kernel 读着的共享页不淘汰
   /\ PageTo(s, "free", 0, {}, {})
   /\ UNCHANGED <<rtV, instV, recV, ptl, pvis, sfly, xV, net, ghV>>
 
@@ -1035,7 +1035,7 @@ Unquarantine(p) ==
   /\ Unquar /\ pst[p] = "quar" /\ alive[Loc(p)]
   /\ pqp[p] \in torn[Loc(p)]
   /\ \A x \in led[p] : PeerOf(x, p) \in torn[Loc(p)]
-  /\ sled[p] = {} /\ ~QPinBlocks(p)   \* B1：被 kernel 读着的页不解除隔离（变异 kQuarRelUnderRead 不看）
+  /\ sled[p] = {} /\ ~QPinBlocks(p)   \* KernelReadPins：被 kernel 读着的页不解除隔离（变异 kQuarRelUnderRead 不看）
   /\ PageTo(p, "free", 0, {}, {})
   /\ UNCHANGED <<rtV, instV, recV, ptl, pvis, sfly, xV, net, ghV>>
 
@@ -1044,7 +1044,7 @@ Unquarantine(p) ==
 HwIssue(x) ==
   /\ xk[x] = "wr" /\ hw[x] = "fly"
   /\ hw' = [hw EXCEPT ![x] = "issued"]
-  \* D-082：结局在源读完、对端网卡确认时就定了（Faults 下可以是失败：之后某个 slice 出错，已确认的字节仍在放置）
+  \* 结局在源读完、对端网卡确认时就定了（Faults 下可以是失败：之后某个 slice 出错，已确认的字节仍在放置）
   /\ \E ok \in (IF Faults THEN BOOLEAN ELSE {TRUE}) : hok' = [hok EXCEPT ![x] = ok]
   /\ UNCHANGED <<rtV, instV, recV, pgV, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, iv, xst, nx, net, ghV>>
 
@@ -1079,21 +1079,21 @@ StreamLand(p) ==
   /\ UNCHANGED <<rtV, instV, recV, pst, pr, pgn, plt, pvis, led, sled, prefc, pqp, xV, net, ghV>>
 
 
-\* ============================ 回退单 RB-20261105-001 / -002 的分支 ============================
-\* RB-001（开关 PRel）：P 的请求在它的 x 还没停时正常结束（glue：p_post 之后立刻 release；pull：暴露之后）。
+\* ============================ source-release ordering / transfer-length consistency 的分支 ============================
+\* source-release ordering（开关 PRel）：P 的请求在它的 x 还没停时正常结束（glue：p_post 之后立刻 release；pull：暴露之后）。
 \* 源页按账本进 Drain(h)（账本里还有 x），只由 Cqe（E2，push）/ ReleaseSource（pull）放回 Free，或由 PDrainLibFail
 \* （PLibFail 规则）、DrainTimeout 进隔离。不发任何消息（notice 由 Cqe 照常发）。变异 pReleaseFree：直接放源页。
 PRelease(i, r) ==
   /\ PRel /\ IsP(i) /\ alive[i]
   /\ \/ ph[i][r] = "sent" /\ iv[rx[i][r]] = "posted"
-     \/ ph[i][r] = "reg" /\ iv[rx[i][r]] = "reg"     \* PReg：glue 在 p_post 之后、p_begin 之前就 release（b-trace 第 2 轮：2,453 个请求全是这个顺序）
+     \/ ph[i][r] = "reg" /\ iv[rx[i][r]] = "reg"     \* PReg：glue 在 p_post 之后、p_begin 之前就 release（trace conformance 第 2 轮：2,453 个请求全是这个顺序）
      \/ ph[i][r] = "exp" /\ xst[rx[i][r]] = "posted"
   /\ LET p == rpg[i][r] IN
        /\ ph' = [ph EXCEPT ![i][r] = "end"]
        /\ PageTo(p, IF Mut = "pReleaseFree" THEN "free" ELSE GiveUpTo(p, "done"), rpe[i][r], led[p], sled[p])
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xV, net, ghV>>
 
-\* RB-001：PLibFail 规则落到请求已结束的源页上：库对 x 返回失败或超时（不是已停证据）→ 源页进隔离，告诉 D
+\* source-release ordering：PLibFail 规则落到请求已结束的源页上：库对 x 返回失败或超时（不是已停证据）→ 源页进隔离，告诉 D
 PDrainLibFailBroken(p) ==
   /\ PRel /\ IsP(Loc(p)) /\ alive[Loc(p)] /\ pst[p] = "drain"
   /\ \E x \in led[p] :
@@ -1114,7 +1114,7 @@ PDrainLibFailSafe(p) ==
 
 PDrainLibFail(p) == IF Mut = "failedAsDrained" THEN PDrainLibFailBroken(p) ELSE PDrainLibFailSafe(p)
 
-\* RB-002（push，D-082 更正）：D 拿到"已停、成功，但 lt ≠ 计划"的消息（成功 notice 的 lt，或带内完成的 lt）：数据不可用（BAD_LEN）。
+\* transfer-length consistency（push，更正）：D 拿到"已停、成功，但 lt ≠ 计划"的消息（成功 notice 的 lt，或带内完成的 lt）：数据不可用（BAD_LEN）。
 \* notice 只在 Cqe 之后发出（带内完成只在放置之后出现），所以它是已停证据：x 出账本；D 的记录若还在等它，以错误结束，
 \* 页回 Free（sled 非空则 Drain）；记录已结束的页（Drain）账本清空即回 Free。不隔离。
 \* 变异 ignoreLt：D 不做这个检查（DRecvNotice、DInband 照单全收，这个动作不使能）。
@@ -1141,7 +1141,7 @@ DBadLen(x) ==
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, hw, hok, iv, nx,
                  crep, dsucc, gbad>>
 
-\* RB-002（pull）：sinfo 里的 lt ≠ D 的计划：D 不发 READ，以错误结束，回 ReleaseSource（承诺永不读）；目的页账本空，回 Free
+\* transfer-length consistency（pull）：sinfo 里的 lt ≠ D 的计划：D 不发 READ，以错误结束，回 ReleaseSource（承诺永不读）；目的页账本空，回 Free
 DSinfoBadLen(j, r) ==
   /\ Mode = "pull" /\ IsD(j) /\ alive[j] /\ ph[j][r] = "wait" /\ Mut # "ignoreLt"
   /\ led[rpg[j][r]] = {} /\ sled[rpg[j][r]] = {}
@@ -1155,9 +1155,9 @@ DSinfoBadLen(j, r) ==
   /\ drep' = [drep EXCEPT ![r][rg[j][r]] = Bump(@)]
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt,
                  hw, hok, xst, nx, crep, dsucc, gbad>>
-\* ============================ main 加活：P 的登记 / 提交拆开（开关 PReg） ============================
-\* glue 06b6baf：p_post（ledger.py:643-686）登记出向条目 POSTED、源页被 pops (2, eid) 钉住；scheduler 随即 release
-\* （prefill.py:153-178，P 的记录在 on_prefill_done 里就结束）；worker 的 p_begin（ledger.py:697-713、prefill.py:378-380）
+\* ============================ P 的登记 / 提交拆开（开关 PReg） ============================
+\* glue：p_post（ledger.py）登记出向条目 POSTED、源页被 pops (2, eid) 钉住；scheduler 随即 release
+\* （prefill.py，P 的记录在 on_prefill_done 里就结束）；worker 的 p_begin（ledger.py、prefill.py）
 \* 在调用传输库前把 POSTED → SUBMITTED，若 abort / 对端失联已先把条目取消（CANCELLED）就返回 False、不调传输库。
 \* PSubmit(x) = p_begin 返回 True：只有从这里起 WRITE 才可能在途。变异 noticeBeforeCompletion 在 PReg 下在这里发 notice。
 PSubmit(x) ==
@@ -1171,8 +1171,8 @@ PSubmit(x) ==
             THEN net \cup {Msg("notice", xp[x], xd[x], xr[x], xg[x], x, xlt[x], 0, TRUE)} ELSE net
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, pgV, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, xst, nx, ghV>>
 
-\* 登记了、还没提交的条目被取消（p_abort 遇到 POSTED → CANCELLED + ACK，ledger.py:766-768；对端失联 peer_lost / p_begin
-\* 里 peer 已不在，ledger.py:370-372、705-708）：停证据是"从未提交"（P 自己的队列，同 D 侧的 nopost / E3′）。x 出源页账本，
+\* 登记了、还没提交的条目被取消（p_abort 遇到 POSTED → CANCELLED + ACK，ledger.py；对端失联 peer_lost / p_begin
+\* 里 peer 已不在，ledger.py）：停证据是"从未提交"（P 自己的队列，同 D 侧的 nopost / E3′）。x 出源页账本，
 \* 给 D 回 nopost（= ABORT_ACK）；P 的记录若还活着就以错误结束。变异 cancelSubmitted：已提交（WRITE 可能在途）的也这样放
 PCancelReg(x) ==
   /\ PReg /\ xk[x] = "wr" /\ alive[xp[x]]
@@ -1193,14 +1193,14 @@ PCancelReg(x) ==
              /\ UNCHANGED ph
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, hw, hok, xst, nx, ghV>>
 
-\* ============================ B 修订：D 解码时加页（D-109 ①，REFINE.md R-F1） ============================
-\* glue df853bc：每个跨页的 decode 步在发射之前（Scheduler._prepare_batch，scheduler/scheduler.py:235-239）调
-\* LedgerCacheManager.allocate_paged（disagg/scheduler_pd.py:190-200）→ ledger.alloc(gen, last_page - first_page)；overlap 循环里
-\* 这时上一步还在 GPU 上跑（overlap_loop 先 _schedule_next_batch 再 _process_last_data，scheduler.py:98-122）。
-\* 核心：alloc_en = 主人 R_LIVE ∧ d_alloc_ok（D：还没暴露，或 x 已 X_VISIBLE；local.rs alloc_en / d_alloc_ok，b-core 第 11 个任务；
-\* D-109 的说法：记录在 run，所以 x VISIBLE、主人 LIVE）。"还没暴露"那一支是 DRecvReq 的前半（R-N1）；暴露之后的这一支在 PdCore
+\* ============================ decode growth and cancellation：D 解码时加页（①） ============================
+\* glue：每个跨页的 decode 步在发射之前（Scheduler._prepare_batch，scheduler/scheduler.py）调
+\* LedgerCacheManager.allocate_paged（disagg/scheduler_pd.py）→ ledger.alloc(gen, last_page - first_page)；overlap 循环里
+\* 这时上一步还在 GPU 上跑（overlap_loop 先 _schedule_next_batch 再 _process_last_data，scheduler.py）。
+\* 核心：alloc_en = 主人 R_LIVE ∧ d_alloc_ok（D：还没暴露，或 x 已 X_VISIBLE；local.rs alloc_en / d_alloc_ok；
+\* 也就是：记录在 run，所以 x VISIBLE、主人 LIVE）。"还没暴露"那一支是 DRecvReq 的前半；暴露之后的这一支在 PdCore
 \* 里 = 记录已提交：run / ovl（DLanded / DReadDone 之后、flush 过；命中的记录没有 x，同样在 run / ovl）。核心不分 run 和 ovl
-\* （没有 decode op 标签，R-N6），所以 ovl 也加页。一次取一组空页（核心的 got），都成 Priv(r, g)：写进度 0（还没有步写过），
+\* （没有 decode op 标签），所以 ovl 也加页。一次取一组空页（核心的 got），都成 Priv(r, g)：写进度 0（还没有步写过），
 \* 不暴露、不进 RDMA / 本地流账本（空页的账本本来就空，K7）。
 \* 变异 growNoRun：记录还没提交（wait / rd）也加页；growNonFree：取的页可以不是空页（不是本记录自己的页就行）
 DGrow(j, r) ==
@@ -1218,8 +1218,8 @@ DGrow(j, r) ==
        /\ pvis' = [p \in Pages |-> IF p \in Q THEN FALSE ELSE pvis[p]]
   /\ UNCHANGED <<rtV, instV, recV, led, sfly, sled, prefc, pqp, xV, net, ghV>>
 
-\* ============================ B1：kernel 读（发射核对、一个步一条钉、步完成） ============================
-\* 核心的发射核对：实例 i 上第 r 行这一步能读吗（只看核心自己的状态；对应 glue ledger.py:446-485 的 launch，B1 ② 挪进核心）
+\* ============================ KernelReadPins：kernel 读（发射核对、一个步一条钉、步完成） ============================
+\* 核心的发射核对：实例 i 上第 r 行这一步能读吗（只看核心自己的状态；对应 glue ledger.py 的 launch，KernelReadPins ② 挪进核心）
 \*   D 非命中：记录已提交（run / ovl：落地证据之后、DStartRun 里 flush 之后），页是 Priv(r, g)、RDMA 账本空、lt = 计划；
 \*   D 命中：映射的共享页（已封存 = 整页落地）；
 \*   P：自己这一代的 prefill 写已 E1（PPoll 之后：ready / reg / sent / exp），页是 Priv(r, g)。B2 再加 P 侧共享前缀页。
@@ -1241,11 +1241,11 @@ KRowOK(i, r) ==
                 /\ pst[p] = "priv" /\ pr[p] = r /\ pgn[p] = g /\ Tag(r, g) \notin sled[p]
              \/ /\ Mut = "kLaunchUnlanded" /\ ph[i][r] = "pre"                          \* prefill 写还没 E1
                 /\ pst[p] = "priv" /\ pr[p] = r /\ pgn[p] = g
-\* 读集合的一个元素：核心按 h = (r, g) 算出的页（D-089：indices / indptr / last_page_len 由核心算，glue 只拷贝）
+\* 读集合的一个元素：核心按 h = (r, g) 算出的页（indices / indptr / last_page_len 由核心算，glue 只拷贝）
 \* @type: (Int, Int) => <<Int, Int, Int, Int>>;
 KEnt(i, r) == <<r, rg[i][r], rpg[i][r], IF rhit[i][r] THEN 1 ELSE 0>>
 
-\* B 修订（DGrow）：一行的读集合 = 这一代在本实例上的全部页（同核心 launch 的 rlp = 这一代的页数）：记录映射的那一页（KEnt），
+\* decode growth and cancellation（DGrow）：一行的读集合 = 这一代在本实例上的全部页（同核心 launch 的 rlp = 这一代的页数）：记录映射的那一页（KEnt），
 \*   加上每一页加页。加页的元素按发射前的写进度分两种（第 4 项 sh）：2 = 读它（之前已有步写过：plt >= 1，核心的
 \*   rd <= max(rwr, rla)）；3 = 这一步不读它（还没有步写过：这一步写它，或不碰它）。变异 kReadUnwritten：没人写过的也按 2 读
 GrownRows(i, rows) == {q \in Pages : IsD(i) /\ Loc(q) = i /\ pst[q] = "priv" /\ \E r \in rows : pr[q] = r /\ pgn[q] = rg[i][r] /\ q # rpg[i][r]}
@@ -1253,9 +1253,9 @@ GrownRows(i, rows) == {q \in Pages : IsD(i) /\ Loc(q) = i /\ pst[q] = "priv" /\ 
 KGEnt(q) == <<pr[q], pgn[q], q, IF plt[q] >= 1 \/ Mut = "kReadUnwritten" THEN 2 ELSE 3>>
 
 \* 发射一步（rows 非空）：核对每一行，记下读集合，钉住（kpin），GPU 开始读（kfly）。调度器选哪些行是不可信策略（全称）。
-\* B 修订：这一步把还没有步写过的加页中的一部分 W（store 的写区间 [rd, wr) 覆盖到的；调度器定，全称）写下：记 plt = 1（核心
+\* decode growth and cancellation：这一步把还没有步写过的加页中的一部分 W（store 的写区间 [rd, wr) 覆盖到的；调度器定，全称）写下：记 plt = 1（核心
 \*   rla）；真值 ptl = 1 也在发射时记：A9 流内 FIFO，之后在本实例发射的任何一步开始读时这一步的 store 已完成，这一步自己的
-\*   attention 在自己的 store 之后读（CT-KREAD (e)）。变异 kGrowNoFifo：写在这一步 KLand 时才落下；kReadUnwritten：不写
+\*   attention 在自己的 store 之后读。变异 kGrowNoFifo：写在这一步 KLand 时才落下；kReadUnwritten：不写
 KLaunch(i, s, rows) ==
   /\ alive[i] /\ ~kpin[i][s] /\ ~kfly[i][s]
   /\ rows # {} /\ \A r \in rows : KRowOK(i, r) /\ (IF B2 /\ IsP(i) THEN SRowReady(i, r) ELSE TRUE)
@@ -1273,7 +1273,7 @@ KLaunchWG(i, s, r, p) ==
   /\ Mut = "kWrongGen" /\ alive[i] /\ ~kpin[i][s] /\ ~kfly[i][s]
   /\ Active(i, r) /\ ~rhit[i][r] /\ ph[i][r] \in (IF IsD(i) THEN {"run", "ovl"} ELSE {"ready", "reg", "sent", "exp"})
   /\ Loc(p) = i /\ pst[p] \in {"priv", "drain", "quar"} /\ pr[p] = r
-  /\ ~(pst[p] = "priv" /\ pgn[p] = rg[i][r] /\ p # rpg[i][r])   \* B 修订：这一代自己的加页不在这个变异的选择里（由 KLaunch 按 sh 2 / 3 读）
+  /\ ~(pst[p] = "priv" /\ pgn[p] = rg[i][r] /\ p # rpg[i][r])   \* decode growth and cancellation：这一代自己的加页不在这个变异的选择里（由 KLaunch 按 sh 2 / 3 读）
   /\ IF IsD(i) THEN led[p] = {} /\ plt[p] = NTok(r, pgn[p]) ELSE sled[p] = {}
   /\ kpin' = [kpin EXCEPT ![i][s] = TRUE] /\ kfly' = [kfly EXCEPT ![i][s] = TRUE]
   /\ krs' = [krs EXCEPT ![i][s] = {<<r, rg[i][r], p, 0>>}]
@@ -1429,7 +1429,7 @@ SNext ==
   \/ \E i \in PInst : FlushAll(i)
 Evict(p) == LegacyEvict(p)
 
-\* 合法终态：路由器没有在等的请求、代用完、活实例上没有活记录、没有在途 op（B1：没有在跑的步、活实例上没有钉；
+\* 合法终态：路由器没有在等的请求、代用完、活实例上没有活记录、没有在途 op（KernelReadPins：没有在跑的步、活实例上没有钉；
 \* PReg：没有登记了还没提交的条目）
 Done ==
   /\ \A r \in Rq : rt[r] # "wait" /\ gen[r] = MG
@@ -1478,7 +1478,7 @@ Fair ==
                      /\ WF_vars(XRecvRel(x) /\ SFollow) /\ WF_vars(HwStop(x) /\ SFollow) /\ WF_vars(DBadLen(x) /\ SFollow)
   /\ \A p \in Pages : WF_vars(PagePoll(p) /\ SFollow) /\ WF_vars(DrainTimeout(p) /\ SFollow) /\ WF_vars(DrainDone(p) /\ SFollow) /\ WF_vars(StreamLand(p) /\ SFollow)
                       /\ WF_vars(PDrainLibFail(p) /\ SFollow)
-  \* PReg：worker 最终处理登记的条目；B1：GPU 最终做完一步（A8），核心最终收这一步的完成。KLaunch 不要求（调度器可以不再发射）
+  \* PReg：worker 最终处理登记的条目；KernelReadPins：GPU 最终做完一步（A8），核心最终收这一步的完成。KLaunch 不要求（调度器可以不再发射）
   /\ \A x \in Xids : WF_vars(PSubmit(x) /\ SFollow) /\ WF_vars(PCancelReg(x) /\ SFollow)
   /\ \A i \in Inst, s \in KSlots : WF_vars(KLand(i, s) /\ SFollow) /\ WF_vars(KDone(i, s) /\ SFollow)
 LSpec == Spec /\ Fair
@@ -1492,7 +1492,7 @@ BaseTypeOK ==
   /\ hp \in [Rq -> [Gens -> {0} \cup Inst]] /\ hd \in [Rq -> [Gens -> {0} \cup Inst]]
   /\ alive \in [Inst -> BOOLEAN] /\ nfail \in 0..MaxFail /\ torn \in [Inst -> SUBSET Inst]
   /\ kpin \in [Inst -> [KSlots -> BOOLEAN]] /\ kfly \in [Inst -> [KSlots -> BOOLEAN]]
-  /\ krs \in [Inst -> [KSlots -> SUBSET (Rq \X Gens \X KPages \X {0, 1, 2, 3, 4})]]   \* B 修订：sh 2 / 3 = 加页
+  /\ krs \in [Inst -> [KSlots -> SUBSET (Rq \X Gens \X KPages \X {0, 1, 2, 3, 4})]]   \* decode growth and cancellation：sh 2 / 3 = 加页
   /\ ph \in [Inst -> [Rq -> PhSet]] /\ rg \in [Inst -> [Rq -> 0..MG]]
   /\ rpg \in [Inst -> [Rq -> 0..NP]] /\ rpe \in [Inst -> [Rq -> {0} \cup Inst]]
   /\ rx \in [Inst -> [Rq -> 0..MX]] /\ rhit \in [Inst -> [Rq -> BOOLEAN]]
@@ -1517,9 +1517,9 @@ BaseTypeOK ==
 Writing(x) == InFl(x)
 NoWriteInto(p) == \A x \in Xids : Writing(x) => xdst[x] # p
 
-\* P-W1 + P-R2 NoStrayAccess：在途的写（目的页）、在途的读（源页）、本地流 op，碰到的页都还为它持有
+\* NoStrayAccess：在途的写（目的页）、在途的读（源页）、本地流 op，碰到的页都还为它持有
 \*   （没离开它这一代的 Private / Draining / Quarantined 去 Free 或交给新主人）；共享页只被 D 的 decode 读
-\* B1：读集合的一个元素 e = <<r, g, p, sh>> 的页仍为它持有：私有读 = 页仍属 (r, g)（priv / drain / quar，或由它封存成的
+\* KernelReadPins：读集合的一个元素 e = <<r, g, p, sh>> 的页仍为它持有：私有读 = 页仍属 (r, g)（priv / drain / quar，或由它封存成的
 \*   shared：封存不改 pr、pgn，只读），共享读 = 页仍是共享页（没被淘汰）。回 Free 会清掉 pr、pgn，换主人会改它们
 \* @type: <<Int, Int, Int, Int>> => Bool;
 KHeld(e) == LET p == e[3] IN
@@ -1532,21 +1532,21 @@ NoStrayAccess ==
   /\ \A p \in Pages : \A t \in sfly[p] :
         \/ pst[p] \in {"priv", "drain", "quar"} /\ pr[p] = t[1] /\ pgn[p] = t[2]
         \/ pst[p] = "shared" /\ IsD(Loc(p))
-  \* B1（真值层）：GPU 还在跑的步读的页仍为读集合里的行持有
+  \* KernelReadPins（真值层）：GPU 还在跑的步读的页仍为读集合里的行持有
   /\ \A i \in Inst, s \in KSlots : kfly[i][s] => \A e \in krs[i][s] : KHeld(e)
 
-\* B1 NoFreeUnderRead（账本层）：已发射、还没 KDone 的步，读集合里的页一直归钉住它的那一代（pr、pgn 不变），不回 Free、
+\* KernelReadPins NoFreeUnderRead（账本层）：已发射、还没 KDone 的步，读集合里的页一直归钉住它的那一代（pr、pgn 不变），不回 Free、
 \*   不重新分配、不解除隔离、共享页不被淘汰。Priv → Drain / Quar 允许（overlap 调度器在读它的 k+1 步还在途时就 release 请求，
-\*   b-core 11-05 的读法相同）；Priv → Shared 封存（只读、pr / pgn 不变）在本模型里也允许（见 W_KSealPinned，待 b-core 对齐）。
+\*   与核心的读法相同）；Priv → Shared 封存（只读、pr / pgn 不变）在本模型里也允许（见 W_KSealPinned）。
 \*   "钉住期间没有写进来"不在这条里：RDMA 写由 MC_pd_ind 的 K15（被钉 ⇒ KData，含 NoWriteInto）归纳证、TLC 由 KReadIntegrity
 \*   在 GPU 读的期间查；别的代的本地流 op 由 NoStrayAccess 的 sfly 一项排除；本行自己的 decode / store 写（位置 ≥ read_upto）
 \*   不按 token 建，允许
 NoFreeUnderRead == \A i \in Inst, s \in KSlots : kpin[i][s] => \A e \in krs[i][s] : KHeld(e)
 
-\* B1 KReadIntegrity（真值层）：GPU 还在读的每一格都是本行这一代已落地且可见的私有页（D：计划的 NTok 个 token 已落地、
+\* KernelReadPins KReadIntegrity（真值层）：GPU 还在读的每一格都是本行这一代已落地且可见的私有页（D：计划的 NTok 个 token 已落地、
 \*   pvis；P：核心记下的 lt = 真落地的数、本页没有本地写在途），或整页落地的共享页；读时没有 RDMA 写在途
 \* @type: (Int, <<Int, Int, Int, Int>>) => Bool;
-\* B 修订（DGrow）：加页的元素：sh = 2（读）= 本行这一代之前某一步写下的 KV 已落下（ptl >= 1；0 = 还没人写过，页里是上一个
+\* decode growth and cancellation（DGrow）：加页的元素：sh = 2（读）= 本行这一代之前某一步写下的 KV 已落下（ptl >= 1；0 = 还没人写过，页里是上一个
 \*   主人的字节；-1 = 被别人写过）；sh = 3（这一步不读）只要求没有 RDMA 写在途
 KData(i, e) == LET p == e[3] IN
   /\ NoWriteInto(p)
@@ -1557,7 +1557,7 @@ KData(i, e) == LET p == e[3] IN
      ELSE ptl[p] = plt[p] /\ sfly[p] = {}
 BaseKReadIntegrity == \A i \in Inst, s \in KSlots : kfly[i][s] => \A e \in krs[i][s] : Loc(e[3]) = i /\ KHeld(e) /\ KData(i, e)
 
-\* P-R1 ReadOwnLanded：D 的 decode 只读自己这一代已落地、且对 kernel 可见（H-visible）的私有页（全部 Len 个 token），
+\* ReadOwnLanded：D 的 decode 只读自己这一代已落地、且对 kernel 可见（H-visible）的私有页（全部 Len 个 token），
 \*   或已整页落地的共享页；读时没有写在途
 BaseReadOwnLanded ==
   \A j \in DInst, r \in Rq : ph[j][r] \in {"run", "ovl"} =>
@@ -1566,38 +1566,38 @@ BaseReadOwnLanded ==
       /\ \/ ~rhit[j][r] /\ pst[q] = "priv" /\ pr[q] = r /\ pgn[q] = rg[j][r] /\ ptl[q] = NTok(r, rg[j][r]) /\ pvis[q]
          \/ rhit[j][r] /\ pst[q] = "shared" /\ ptl[q] = PS
 
-\* P-R1（源侧）SendOwnLanded：网卡读源页时，源页上这一代的数据已落地、没有本地写在途（sglang#41395 类）
-BaseSendOwnLanded == \A x \in Xids : hw[x] = "fly" => (ptl[xsrc[x]] = xlt[x] /\ sfly[xsrc[x]] = {})   \* RB-002：比的是 x 声称带的 lt（BadLen 关时 = 计划）
+\* SendOwnLanded（源侧）：网卡读源页时，源页上这一代的数据已落地、没有本地写在途（sglang#41395 类）
+BaseSendOwnLanded == \A x \in Xids : hw[x] = "fly" => (ptl[xsrc[x]] = xlt[x] /\ sfly[xsrc[x]] = {})   \* transfer-length consistency：比的是 x 声称带的 lt（BadLen 关时 = 计划）
 
-\* P-R4 SealOnlyLanded：共享页整页已落地（page_size > 1 时只有写满的页），且没有写在途
+\* SealOnlyLanded：共享页整页已落地（page_size > 1 时只有写满的页），且没有写在途
 BaseSealOnlyLanded == \A p \in Pages : pst[p] = "shared" => (ptl[p] = PS /\ NoWriteInto(p))
 
-\* P-G1 GenFiltered：代际不符的消息一律丢弃（幽灵 gbad 记"曾被采用"）
+\* GenFiltered：代际不符的消息一律丢弃（幽灵 gbad 记"曾被采用"）
 GenFiltered == ~gbad
 
-\* P-O1 OneReply：每个 (r, g) 至多一个终态回复（D 发出的、客户端收到的）
+\* OneReply：每个 (r, g) 至多一个终态回复（D 发出的、客户端收到的）
 OneReply == \A r \in Rq, g \in Gens : drep[r][g] <= 1 /\ crep[r][g] # "two"
 
-\* P-O2 ReplyTruth：客户端收到成功 ⇒ D 真的读着这一代落地的页做完了
+\* ReplyTruth：客户端收到成功 ⇒ D 真的读着这一代落地的页做完了
 ReplyTruth == \A r \in Rq, g \in Gens : crep[r][g] = "ok" => dsucc[r][g]
 
-\* P-Q QuarNeverMapped：隔离页不被任何活记录映射
+\* QuarNeverMapped：隔离页不被任何活记录映射
 QuarNeverMapped == \A i \in Inst, r \in Rq : (Active(i, r) /\ rpg[i][r] \in Pages) => pst[rpg[i][r]] # "quar"
 
-\* P-Q QuarSticky（第一步兜底）：隔离页在进程生命期内不离开隔离（动作性质）
+\* QuarSticky（第一步兜底）：隔离页在进程生命期内不离开隔离（动作性质）
 QuarSticky == [][\A p \in Pages : (pst[p] = "quar" /\ ~Unquar) => pst'[p] = "quar"]_vars
 
 \* 静止时页守恒：没有活记录、非隔离页的账本都空 ⇒ 非隔离页要么 Free，要么是 refc = 0 的 Shared
 Quiet == /\ \A i \in Inst, r \in Rq : ~Active(i, r)
-         /\ \A p \in Pages : pst[p] # "quar" => (led[p] = {} /\ sled[p] = {} /\ ~KPinned(p))   \* B1：钉也是在途
+         /\ \A p \in Pages : pst[p] # "quar" => (led[p] = {} /\ sled[p] = {} /\ ~KPinned(p))   \* KernelReadPins：钉也是在途
 BaseQuietConservation == Quiet => \A p \in Pages : pst[p] \in {"free", "quar"} \/ (pst[p] = "shared" /\ prefc[p] = 0)
 
-\* B 修订（PReg 超时修法，D-106；原在 B1cCheck.tla）QuarNoReg：隔离的 P 页账本里没有登记态（从未交给传输库）的 x。"从未提交"是
+\* decode growth and cancellation（PReg 超时修法）QuarNoReg：隔离的 P 页账本里没有登记态（从未交给传输库）的 x。"从未提交"是
 \*   P 自己持有的停证据（PCancelReg），隔离只给拿不到停证据的页。P 页账本至多一个 x、页进隔离时账本非空，所以进隔离那一刻它等于
-\*   "账本里的 x 已交给传输库"（B1cCheck 的 QuarHasSubmitted 太强：正确隔离的页在迟到的 Cqe 之后账本为空）
+\*   "账本里的 x 已交给传输库"（QuarHasSubmitted 太强：正确隔离的页在迟到的 Cqe 之后账本为空）
 QuarNoReg == \A p \in Pages : (IsP(Loc(p)) /\ pst[p] = "quar") => \A x \in led[p] : iv[x] # "reg"
 
-\* ================= B2 proposed safety (unfrozen; main reviews) =================
+\* ================= B2 proposed safety =================
 STypeOK ==
   /\ spst \in [SPages -> {"free","priv","shared","drain","dup","quar"}]
   /\ sown \in [SPages -> 0..NR] /\ sgen \in [SPages -> 0..MG] /\ skey \in [SPages -> 0..2]
@@ -1654,7 +1654,7 @@ RecEnds == \A i \in Inst, r \in Rq : Active(i, r) ~> (~Active(i, r) \/ ~alive[i]
 PagesBack == <>[](\A p \in Pages : pst[p] \in {"free", "shared"})
 \* L2（任何运行）：Draining 的页最终离开 Draining（拿到证据回 Free，或超时进隔离）
 DrainEnds == \A p \in Pages : (pst[p] = "drain") ~> (pst[p] # "drain" \/ ~alive[Loc(p)])   \* 挂住的实例自己的页不要求
-\* B1：已发射的步最终被核心收完成（去钉）；挂住的实例自己的步不要求
+\* KernelReadPins：已发射的步最终被核心收完成（去钉）；挂住的实例自己的步不要求
 KStepEnds == \A i \in Inst, s \in KSlots : kpin[i][s] ~> (~kpin[i][s] \/ ~alive[i])
 
 \* ============================ 可达性见证（应被违反） ============================
@@ -1675,22 +1675,22 @@ W_FailRet   == ~\E x \in Xids : iv[x] = "failret"
 W_DrainFreed == [][\A p \in Pages : pst[p] = "drain" => pst'[p] # "free"]_vars
 \* Unquar：隔离页真的回过 Free（动作性质，应被违反）
 W_QuarLeft == [][\A p \in Pages : pst[p] = "quar" => pst'[p] = "quar"]_vars
-\* RB-001 / RB-002 的见证（动作性质，应被违反 = 这一支可达）
+\* source-release ordering / transfer-length consistency 的见证（动作性质，应被违反 = 这一支可达）
 W_PRelease    == [][\A i \in Inst, r \in Rq : ~PRelease(i, r)]_vars
 W_PDrainFreed == [][\A p \in Pages : (IsP(Loc(p)) /\ pst[p] = "drain" /\ led[p] # {}) => pst'[p] # "free"]_vars
 W_PDrainLibFail == [][\A p \in Pages : ~PDrainLibFail(p)]_vars
 W_BadLen      == [][\A x \in Xids : ~DBadLen(x)]_vars
 W_SinfoBadLen == [][\A j \in Inst, r \in Rq : ~DSinfoBadLen(j, r)]_vars
-\* RB-001 §6（D-079）：P 的同一槽在第一笔 x 还在途（或还暴露着）时已经绑定了更新的一代
+\* source-release ordering：P 的同一槽在第一笔 x 还在途（或还暴露着）时已经绑定了更新的一代
 W_PRebind     == ~\E x \in Xids : /\ xk[x] # "none" /\ xp[x] \in Inst
                                   /\ IF xk[x] = "wr" THEN InFl(x) /\ iv[x] \in {"posted", "failret"} ELSE xst[x] = "posted"
                                   /\ Active(xp[x], xr[x]) /\ rg[xp[x]][xr[x]] > xg[x]
-\* RB-004：overlap 下成功结束、页还在 Drain（下一步在跑）
+\* overlapped-finish drain：overlap 下成功结束、页还在 Drain（下一步在跑）
 W_FinishOvl   == [][\A j \in Inst, r \in Rq : ~DFinishOvl(j, r)]_vars
 W_SuccDrain   == ~\E p \in Pages : IsD(Loc(p)) /\ pst[p] = "drain" /\ pr[p] \in Rq /\ pgn[p] \in Gens /\ dsucc[pr[p]][pgn[p]]
-\* D-082：¬ok notice 走隔离那一支真的发生过（这一支不改 xst）
+\* ¬ok notice 走隔离那一支真的发生过（这一支不改 xst）
 W_NokQuar     == [][\A x \in Xids : DRecvNotice(x) => xst'[x] # "posted"]_vars
-\* B1 的见证（应被违反 = 可达）
+\* KernelReadPins 的见证（应被违反 = 可达）
 W_KLaunchD    == ~\E i \in DInst, s \in KSlots : kpin[i][s]
 W_KLaunchP    == ~\E i \in PInst, s \in KSlots : kpin[i][s]
 W_KHit        == ~\E i \in DInst, s \in KSlots : kpin[i][s] /\ \E e \in krs[i][s] : e[4] = 1
@@ -1705,7 +1705,7 @@ W_PSubmitLate == [][\A x \in Xids : (PSubmit(x) /\ rg[xp[x]][xr[x]] = xg[x]) => 
 W_PCancelReg  == [][\A x \in Xids : ~PCancelReg(x)]_vars
 \* failedAsDrained 接进 PDrainLibFail：这一支真的放了源页（只在变异下可达；设计下 PDrainLibFail 只进隔离）
 W_FadDrain    == [][\A p \in Pages : PDrainLibFail(p) => pst'[p] # "free"]_vars
-\* B 修订的见证（应被违反 = 可达）
+\* decode growth and cancellation 的见证（应被违反 = 可达）
 \* DGrow：加页被之后的一步读（sh = 2：先有一步写下、完成或还在途，再有一步发射读它）
 W_GrowRead    == ~\E i \in DInst, s \in KSlots : kpin[i][s] /\ \E e \in krs[i][s] : e[4] = 2
 \* DGrow：记录在 ovl（下一步已发射、还在跑）时加页
@@ -1724,7 +1724,7 @@ W_PEndCancelReg == [][\A i \in Inst, r \in Rq : ~(ph[i][r] = "reg" /\ (PTimeout(
 W_PCancelDrain == [][\A x \in Xids : PCancelReg(x) => ~(pst[xsrc[x]] = "drain" /\ ph[xp[x]][xr[x]] = "end")]_vars
 
 
-\* I1-c D-166 port onto B2 05e988a5; Init/Next/Safety unchanged.
+\* Ported onto B2; Init/Next/Safety unchanged.
 \* HwStop is physical truth, not necessarily observable after LibFailRet.
 \* Teardown is the successful A7 revoke barrier, NOT merely calling an API.
 EventualStopEvidence ==

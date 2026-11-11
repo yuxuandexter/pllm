@@ -2090,9 +2090,9 @@ THEOREM Part_PSubmit_03_02 ==
         /\ iv[y] = "cqe" => hw[y] \in CqeHw(y)
         /\ hw[y] = "issued" => xk[y] = "wr"
         /\ xst[y] = "revoked" => iv[y] = "nopost"
-        /\ xst[y] = "landed" => (hw[y] = "stop" /\ hok[y] /\ xlt[y] = xnt[y])   \* RB-002：只有 lt = 计划才算落地
-        /\ (xk[y] = "rd" /\ iv[y] \notin {"none", "nopost"}) => xlt[y] = xnt[y]   \* RB-002：pull 的 D 只在 lt = 计划时发 READ
-        /\ xst[y] = "failed" => IF xk[y] = "wr" THEN (hw[y] = "stop" /\ hok[y] /\ xlt[y] # xnt[y])   \* D-082：push 的 failed 只来自 BAD_LEN
+        /\ xst[y] = "landed" => (hw[y] = "stop" /\ hok[y] /\ xlt[y] = xnt[y])   \* transfer-length consistency：只有 lt = 计划才算落地
+        /\ (xk[y] = "rd" /\ iv[y] \notin {"none", "nopost"}) => xlt[y] = xnt[y]   \* transfer-length consistency：pull 的 D 只在 lt = 计划时发 READ
+        /\ xst[y] = "failed" => IF xk[y] = "wr" THEN (hw[y] = "stop" /\ hok[y] /\ xlt[y] # xnt[y])   \* push 的 failed 只来自 BAD_LEN
                                  ELSE ((iv[y] = "cqe" /\ hw[y] = "stop" /\ ~hok[y]) \/ iv[y] = "nopost")
         /\ InFl(y) => (xst[y] = "posted" /\ (iv[y] \in {"posted", "failret"} \/ (iv[y] = "cqe" /\ hw[y] = "issued" /\ ~hok[y])))
 <2> HIDE DEF StepK3, K3, PSubmit, CoreTypeOK

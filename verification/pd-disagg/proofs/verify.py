@@ -21,8 +21,8 @@ from proof_graph import IndependentGraph, clean, compact, definitions, TOP
 
 HERE = Path(__file__).resolve().parent
 PINS = {
-    'PdCore.tla': '24ef403401bed868c08be7f48f1b5da81052442448dc83443771b23317631906',
-    'MC_pd_ind.tla': '27563caf183f1902d8bfda46e9b9c6ddb4f77203b2c48f23a177b894bde7b65e',
+    'PdCore.tla': '31df2b2a549021ac560c80e84fbce6f2cf23de2ae5a7673959e830ab5f5da219',
+    'MC_pd_ind.tla': 'ffff1232d0c4c3ea57ceb1c33bf4c549258379417881616d870a52240fba1cd9',
 }
 ROOT_PREMISE_SHA256 = {'Sizes': 'af40722abc44ba096a008dab5485af44ef08566d93b2b51e29163189d85ead85', 'Design': 'adbb202057cc1d2aef64e8fab7d83651e57ac4b41189e9daa0f1c8fe1eae5e5d'}
 ROOT = 'PdCore_Proof::SpecImpliesAlwaysSafety'

@@ -128,7 +128,7 @@ class StubEngine:
     def _flat(self, kv: int, layer: int):
         return self.kv[kv, layer].view(-1, H, HD)
 
-    def _gather_06b6baf(self, batch):
+    def _gather_from_page_table(self, batch):
         """Reconstruct attention and store slots independently from the page table."""
         ind, ip, ol = [], [0], []
         for r in batch.padded_reqs:
@@ -141,7 +141,7 @@ class StubEngine:
         self.steps += 1
         ka = getattr(batch, "pd_kargs", None)
         if ka is not None:
-            ind, ip, ol = self._gather_06b6baf(batch)
+            ind, ip, ol = self._gather_from_page_table(batch)
             same = (ka.indices.tolist() == ind and ka.indptr_cpu.tolist() == ip
                     and batch.out_loc.tolist() == ol and ka.last_page_len_cpu.tolist()
                     == [1] * len(batch.padded_reqs))

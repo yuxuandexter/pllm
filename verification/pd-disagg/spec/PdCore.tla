@@ -46,7 +46,7 @@
 (*                                                                         *)
 (* KernelReadPins ③（kernel 读钉设计）：kernel 读进核心。每个实例有 KR 个步槽；     *)
 (*  KLaunch(i, s, rows) 由核心做发射核对并算出读集合 krs（一个步一条钉，不按   *)
-(*  页记 sled，§15.4 #5），KLand 是 GPU 做完（环境），KDone 是事件查询为真后   *)
+(*  页记 sled），KLand 是 GPU 做完（环境），KDone 是事件查询为真后             *)
 (*  核心去钉（= step_done，stream completion）。被钉的页不换状态（不回 Free、不换主人、不解除 *)
 (*  隔离）。attention kernel 不写 KV（store.cu 按 out_loc 写，归现有的本地流 op）*)
 (*  KernelCompletion 本地 kernel 步最终做完（KLand 弱公平）；完成顺序不限（最宽）。           *)
@@ -90,7 +90,7 @@ CONSTANTS
   \* @type: Int;
   KR,        \* KernelReadPins：每个实例的 kernel 步槽数（同时在途的步数上界；0 = 不建 kernel 读）
   \* @type: Bool;
-  PReg,      \* main 加活（开关）：P 的 p_post 只登记（可取消），p_begin 才把 WRITE 交给传输库
+  PReg,      \* 提交与登记分离（开关）：P 的 p_post 只登记（可取消），p_begin 才把 WRITE 交给传输库
   \* @type: Str;
   Mut,       \* "none" 或一个变异体（见 Mutants）
   \* @type: Bool;
@@ -1155,9 +1155,9 @@ DSinfoBadLen(j, r) ==
   /\ drep' = [drep EXCEPT ![r][rg[j][r]] = Bump(@)]
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt,
                  hw, hok, xst, nx, crep, dsucc, gbad>>
-\* ============================ main 加活：P 的登记 / 提交拆开（开关 PReg） ============================
-\* glue 06b6baf：p_post（ledger.py:643-686）登记出向条目 POSTED、源页被 pops (2, eid) 钉住；scheduler 随即 release
-\* （prefill.py:153-178，P 的记录在 on_prefill_done 里就结束）；worker 的 p_begin（ledger.py:697-713、prefill.py:378-380）
+\* ============================ P 的登记 / 提交拆开（开关 PReg） ============================
+\* glue：p_post（ledger.py）登记出向条目 POSTED、源页被 pops (2, eid) 钉住；scheduler 随即 release
+\* （prefill.py，P 的记录在 on_prefill_done 里就结束）；worker 的 p_begin（ledger.py、prefill.py）
 \* 在调用传输库前把 POSTED → SUBMITTED，若 abort / 对端失联已先把条目取消（CANCELLED）就返回 False、不调传输库。
 \* PSubmit(x) = p_begin 返回 True：只有从这里起 WRITE 才可能在途。变异 noticeBeforeCompletion 在 PReg 下在这里发 notice。
 PSubmit(x) ==
@@ -1171,8 +1171,8 @@ PSubmit(x) ==
             THEN net \cup {Msg("notice", xp[x], xd[x], xr[x], xg[x], x, xlt[x], 0, TRUE)} ELSE net
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, pgV, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, xst, nx, ghV>>
 
-\* 登记了、还没提交的条目被取消（p_abort 遇到 POSTED → CANCELLED + ACK，ledger.py:766-768；对端失联 peer_lost / p_begin
-\* 里 peer 已不在，ledger.py:370-372、705-708）：停证据是"从未提交"（P 自己的队列，同 D 侧的 nopost / never-posted evidence′）。x 出源页账本，
+\* 登记了、还没提交的条目被取消（p_abort 遇到 POSTED → CANCELLED + ACK，ledger.py；对端失联 peer_lost / p_begin
+\* 里 peer 已不在，ledger.py）：停证据是"从未提交"（P 自己的队列，同 D 侧的 nopost / never-posted evidence′）。x 出源页账本，
 \* 给 D 回 nopost（= ABORT_ACK）；P 的记录若还活着就以错误结束。变异 cancelSubmitted：已提交（WRITE 可能在途）的也这样放
 PCancelReg(x) ==
   /\ PReg /\ xk[x] = "wr" /\ alive[xp[x]]
@@ -1194,9 +1194,9 @@ PCancelReg(x) ==
   /\ UNCHANGED <<rtV, instV, rg, rpg, rpe, rx, rhit, ptl, pvis, sfly, xr, xg, xk, xp, xd, xsrc, xdst, xnt, xlt, hw, hok, xst, nx, ghV>>
 
 \* ============================ decode growth and cancellation：D 解码时加页（解码加页） ============================
-\* glue df853bc：每个跨页的 decode 步在发射之前（Scheduler._prepare_batch，scheduler/scheduler.py:235-239）调
-\* LedgerCacheManager.allocate_paged（disagg/scheduler_pd.py:190-200）→ ledger.alloc(gen, last_page - first_page)；overlap 循环里
-\* 这时上一步还在 GPU 上跑（overlap_loop 先 _schedule_next_batch 再 _process_last_data，scheduler.py:98-122）。
+\* glue：每个跨页的 decode 步在发射之前（Scheduler._prepare_batch，scheduler/scheduler.py）调
+\* LedgerCacheManager.allocate_paged（disagg/scheduler_pd.py）→ ledger.alloc(gen, last_page - first_page)；overlap 循环里
+\* 这时上一步还在 GPU 上跑（overlap_loop 先 _schedule_next_batch 再 _process_last_data，scheduler.py）。
 \* 核心：alloc_en = 主人 R_LIVE ∧ d_alloc_ok（D：还没暴露，或 x 已 X_VISIBLE；local.rs alloc_en / d_alloc_ok，账本生命周期规则；
 \* the contract 的说法：记录在 run，所以 x VISIBLE、主人 LIVE）。"还没暴露"那一支是 DRecvReq 的前半（pre-exposure allocation）；暴露之后的这一支在 PdCore
 \* 里 = 记录已提交：run / ovl（DLanded / DReadDone 之后、flush 过；命中的记录没有 x，同样在 run / ovl）。核心不分 run 和 ovl
@@ -1219,7 +1219,7 @@ DGrow(j, r) ==
   /\ UNCHANGED <<rtV, instV, recV, led, sfly, sled, prefc, pqp, xV, net, ghV>>
 
 \* ============================ KernelReadPins：kernel 读（发射核对、一个步一条钉、步完成） ============================
-\* 核心的发射核对：实例 i 上第 r 行这一步能读吗（只看核心自己的状态；对应 glue ledger.py:446-485 的 launch，KernelReadPins ② 挪进核心）
+\* 核心的发射核对：实例 i 上第 r 行这一步能读吗（只看核心自己的状态；对应 glue ledger.py 的 launch，KernelReadPins ② 挪进核心）
 \*   D 非命中：记录已提交（run / ovl：落地证据之后、DStartRun 里 flush 之后），页是 Priv(r, g)、RDMA 账本空、lt = 计划；
 \*   D 命中：映射的共享页（已封存 = 整页落地）；
 \*   P：自己这一代的 prefill 写已 stream completion（PPoll 之后：ready / reg / sent / exp），页是 Priv(r, g)。PrefixSharing 再加 P 侧共享前缀页。
@@ -1586,10 +1586,10 @@ OneReply == \A r \in Rq, g \in Gens : drep[r][g] <= 1 /\ crep[r][g] # "two"
 \* TruthfulReply ReplyTruth：客户端收到成功 ⇒ D 真的读着这一代落地的页做完了
 ReplyTruth == \A r \in Rq, g \in Gens : crep[r][g] = "ok" => dsucc[r][g]
 
-\* P-Q QuarNeverMapped：隔离页不被任何活记录映射
+\* QuarNeverMapped：隔离页不被任何活记录映射
 QuarNeverMapped == \A i \in Inst, r \in Rq : (Active(i, r) /\ rpg[i][r] \in Pages) => pst[rpg[i][r]] # "quar"
 
-\* P-Q QuarSticky（第一步兜底）：隔离页在进程生命期内不离开隔离（动作性质）
+\* QuarSticky（第一步兜底）：隔离页在进程生命期内不离开隔离（动作性质）
 QuarSticky == [][\A p \in Pages : (pst[p] = "quar" /\ ~Unquar) => pst'[p] = "quar"]_vars
 
 \* 静止时页守恒：没有活记录、非隔离页的账本都空 ⇒ 非隔离页要么 Free，要么是 refc = 0 的 Shared
@@ -1602,7 +1602,7 @@ BaseQuietConservation == Quiet => \A p \in Pages : pst[p] \in {"free", "quar"} \
 \*   "账本里的 x 已交给传输库"（quarantine-entry check 的 QuarHasSubmitted 太强：正确隔离的页在迟到的 Cqe 之后账本为空）
 QuarNoReg == \A p \in Pages : (IsP(Loc(p)) /\ pst[p] = "quar") => \A x \in led[p] : iv[x] # "reg"
 
-\* ================= PrefixSharing proposed safety (unfrozen; main reviews) =================
+\* ================= PrefixSharing proposed safety =================
 STypeOK ==
   /\ spst \in [SPages -> {"free","priv","shared","drain","dup","quar"}]
   /\ sown \in [SPages -> 0..NR] /\ sgen \in [SPages -> 0..MG] /\ skey \in [SPages -> 0..2]
@@ -1686,7 +1686,7 @@ W_PDrainFreed == [][\A p \in Pages : (IsP(Loc(p)) /\ pst[p] = "drain" /\ led[p] 
 W_PDrainLibFail == [][\A p \in Pages : ~PDrainLibFail(p)]_vars
 W_BadLen      == [][\A x \in Xids : ~DBadLen(x)]_vars
 W_SinfoBadLen == [][\A j \in Inst, r \in Rq : ~DSinfoBadLen(j, r)]_vars
-\* source-release ordering §6（the contract）：P 的同一槽在第一笔 x 还在途（或还暴露着）时已经绑定了更新的一代
+\* source-release ordering：P 的同一槽在第一笔 x 还在途（或还暴露着）时已经绑定了更新的一代
 W_PRebind     == ~\E x \in Xids : /\ xk[x] # "none" /\ xp[x] \in Inst
                                   /\ IF xk[x] = "wr" THEN InFl(x) /\ iv[x] \in {"posted", "failret"} ELSE xst[x] = "posted"
                                   /\ Active(xp[x], xr[x]) /\ rg[xp[x]][xr[x]] > xg[x]
