@@ -101,43 +101,50 @@ hashes; whole-module checking permits other TLAPS builds unless
 `--stretch` overrides the recorded backend timeout multiplier. Subset success is
 reported separately from a full-tree pass.
 
-Some obligations are sensitive to machine load at the recorded multiplier and can
-reach their time limit on a busy machine. Rerun the module of a failed obligation
-alone (`--module NAME`) with a larger `--stretch` before treating the failure as a
-proof failure.
+The recorded multiplier of a module is enough when that module is checked alone.
+On a loaded machine it may not be: with 40 concurrent processes, modules at
+multiplier 12 reached tlapm's own 60-second front-end limit on obligations that
+take under a second alone. For parallel runs pass `--stretch 40`; a larger
+multiplier only lengthens time limits. If an obligation times out, rerun its
+module alone or with a larger `--stretch` before treating it as a proof failure.
 
-**All results in this release come from whole-module runs.** Slicing is an
-optional way to accelerate independent review.
+The recorded results of the modules that were not re-checked for this release come
+from whole-module runs. The re-checked modules (see Results) were run with
+`verify.sh --module`, the large ones in sliced mode. Slicing is also an optional
+way to accelerate independent review.
 
 ## Results
 
-All **226 modules** passed strict TLAPS checking: **516,973 obligations**, with
-226 whole-module results and 0 sharded results. Of these obligations, 71,233 were
-discharged by a backend prover and 445,740 were classified trivial by tlapm. All 230
-`.tla` files, including the two pinned models, are unchanged copies of the final
-source tree; their hashes are in `source/SHA256SUMS`.
-After the recorded runs, the pinned sources were edited in comments only: with comments
-removed, the text of every source file, token positions included, is identical to the
-text that was checked.
+All **226 modules** passed strict TLAPS checking: **517,493 obligations**. Of these,
+71,439 were discharged by a backend prover and 446,054 were classified trivial by
+tlapm. The blog post cites 516,973, the count before 40 slow proof steps of one shape
+and a few others were split into smaller steps; the split added 520 obligations and
+changed no theorem statement, definition or model file. All 230 `.tla` files,
+including the two pinned models, are listed with their hashes in `source/SHA256SUMS`.
 
-The recorded results were not all produced with `--nofp`: 19 modules were checked
-with `--nofp`, and 207 were checked with tlapm's fingerprint cache enabled in its
-tool-version-checked mode (`--safefp`). Of the 71,233 backend-proved obligations,
-40,511 were cache hits, that is, results reused from an earlier run rather than
-proved in the recorded run.
+The results have two origins:
 
-**Known reproducibility issues.** With the pinned Z3 4.8.9, six obligations did not
-re-prove from scratch at multiplier 12 in an independent rerun:
-`PdActionSlice_DrainTimeout_01` line 1809, `PdActionSlice_DFinishOvl_02` line 3684,
-`PdFinalAction_DFinish` line 2186, `PdActionSlice_DAbort_01` line 443,
-`PdActionSlice_DFinishOvl_01` line 443 and `PdActionSlice_DXferFailed_01` line 439.
-All six are cache hits in the recorded results. Multiplier 12 is the recorded
-multiplier for five of these modules and gives these steps a 240-second limit;
-`PdActionSlice_DFinishOvl_02` is recorded at 24. Two of the obligations
-(`PdActionSlice_DrainTimeout_01` line 1809 and `PdActionSlice_DFinishOvl_02` line
-3684) were proved with a longer time limit; the other four were not proved by Z3
-4.8.9 within 3.3 times the 240-second limit. A newer Z3 (5.3.3) proves the same
-generated SMT problems in under a second. A repair of these steps is in progress.
+- **Re-proved from scratch for this release: 67 modules, 153,417 obligations,**
+  20,761 of them backend-proved. Each was run with `verify.sh --module`, that is
+  with `--strict --nofp` and no fingerprint cache, on the recorded toolchain. They
+  are the 35 modules whose proof steps were rewritten, the 27 root and assembly
+  modules, and five further modules selected for re-checking.
+  `REVERIFIED.tsv` lists them with the multiplier used and the largest
+  time-used-to-limit ratio of any backend obligation; that ratio is at most 0.09.
+- **Earlier recorded results kept: 159 modules, 364,076 obligations.** Six were
+  checked with `--nofp` and 153 with tlapm's fingerprint cache enabled in its
+  tool-version-checked mode (`--safefp`). Of their 50,678 backend-proved
+  obligations, 33,400 were cache hits, that is, results reused from an earlier run
+  rather than proved in the recorded run.
+
+The first public version contained six obligations that did not re-prove from
+scratch within their time limits with the pinned Z3 4.8.9. Those steps, and others
+of the same shape, were rewritten into smaller steps in 35 modules; all 35 now pass
+from scratch, and no rewritten step uses more than 4% of its limit.
+
+After the runs, the pinned sources were edited in comments only: with comments
+removed, the text of every source file, token positions included, is identical to
+the text that was checked.
 
 The packaged static checks pass: pinned source and import hashes; zero new module
 `ASSUME`/`AXIOM`; zero `OMITTED`; 3,456 reachable preservation cells with matching

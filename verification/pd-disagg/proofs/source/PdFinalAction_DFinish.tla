@@ -939,7 +939,16 @@ THEOREM Part_DFinish_03_01 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -2183,7 +2192,16 @@ THEOREM Part_DFinish_03_02 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY

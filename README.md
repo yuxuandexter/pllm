@@ -66,7 +66,7 @@ implementation is linked to the model by runtime precondition checks, mutation t
 and trace checks. Some obligations are sensitive to machine load: rerun a failed module
 alone with a larger `--stretch` before treating it as a proof failure. See
 [`verification/pd-disagg/proofs/README.md`](verification/pd-disagg/proofs/README.md)
-for the assumptions, results and known reproducibility issues.
+for the assumptions, results and reproducibility notes.
 
 ## Architecture
 

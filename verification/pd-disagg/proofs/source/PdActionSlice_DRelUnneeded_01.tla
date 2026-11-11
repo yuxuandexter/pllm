@@ -296,7 +296,16 @@ THEOREM Part_DRelUnneeded_01_01 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -696,7 +705,11 @@ THEOREM Part_DRelUnneeded_01_01 ==
 <2>2. ASSUME NEW p \in SPages, spst'[p] # "shared" PROVE sprefc'[p]=0
  <3>1. {h \in rpgS' : h[4]=p}={} /\ {x \in sentry' : p \in xsrcS'[x]}={} /\ {h \in squar' : h[2]=p}={}
  BY <2>1, <2>2, SMTT(10), Sizes, Location, Design DEF RD_HoldersShared, Sizes, Location, Design
- <3>2. QED BY <2>1, <3>1, FS_EmptySet, SMTT(10), Sizes, Location, Design DEF PrefcMatchesHolders, SRefR, SRefE, SRefQ, Sizes, Location, Design
+ <3>2. QED
+  <4>1. sprefc'[p] = Cardinality({h \in rpgS' : h[4]=p}) + Cardinality({x \in sentry' : p \in xsrcS'[x]})
+                     + Cardinality({h \in squar' : h[2]=p})
+   BY ONLY <1>XUajxLskutlx5HqSJv, <2>1, ZenonT(10) DEF PrefcMatchesHolders, SRefR, SRefE, SRefQ
+  <4>2. QED BY ONLY <3>1, <4>1, FS_EmptySet, SMTT(10)
 <2>3. QED BY <2>2, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -1432,7 +1445,16 @@ THEOREM Part_DRelUnneeded_01_02 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -1746,7 +1768,11 @@ THEOREM Part_DRelUnneeded_01_02 ==
 <2>2. ASSUME NEW p \in SPages, spst'[p] # "shared" PROVE sprefc'[p]=0
  <3>1. {h \in rpgS' : h[4]=p}={} /\ {x \in sentry' : p \in xsrcS'[x]}={} /\ {h \in squar' : h[2]=p}={}
  BY <2>1, <2>2, SMTT(10), Sizes, Location, Design DEF RD_HoldersShared, Sizes, Location, Design
- <3>2. QED BY <2>1, <3>1, FS_EmptySet, SMTT(10), Sizes, Location, Design DEF PrefcMatchesHolders, SRefR, SRefE, SRefQ, Sizes, Location, Design
+ <3>2. QED
+  <4>1. sprefc'[p] = Cardinality({h \in rpgS' : h[4]=p}) + Cardinality({x \in sentry' : p \in xsrcS'[x]})
+                     + Cardinality({h \in squar' : h[2]=p})
+   BY ONLY <1>XUajxLskutlx5HqSJv, <2>1, ZenonT(10) DEF PrefcMatchesHolders, SRefR, SRefE, SRefQ
+  <4>2. QED BY ONLY <3>1, <4>1, FS_EmptySet, SMTT(10)
 <2>3. QED BY <2>2, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -2192,9 +2218,15 @@ THEOREM Part_DRelUnneeded_01_02 ==
 <2>5. RD_PFrame /\ UNCHANGED xsrc
  BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, Sizes, Location, Design, <1>UOIPhXGKuT3lU3NDYCz, <1>UgusVQ9L0dVINDntSZ0wVL, SMTT(10) DEF Sizes, Location, Design
 <2>6. RD_NoStop /\ nx' \in Int /\ nx' >= nx
- BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, Sizes, Location, Design, <2>1, Sizes, SMTT(10) DEF DRelUnneeded, ghV, instV, kV, pgV, recV, rtV, RD_NoStop, CoreTypeOK, Sizes, Location, Design
+ <3>1. hw' = hw /\ nx' = nx
+  BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, ZenonT(10) DEF DRelUnneeded
+ <3>2. nx \in 1..(MX + 1)
+  BY ONLY <2>1, ZenonT(10) DEF CoreTypeOK
+ <3>3. QED BY ONLY <3>1, <3>2, SMTT(10) DEF RD_NoStop
 <2>7. B2 => RD_KeyOnSource
- BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, Sizes, Location, Design, <1>O1T0jJ637c6, <2>1, SMTT(10) DEF DRelUnneeded, ghV, instV, kV, pgV, recV, rtV, RD_KeyOnSource, CoreTypeOK, Sizes, Location, Design
+ <3>1. xr' = xr /\ xg' = xg
+  BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, ZenonT(10) DEF DRelUnneeded
+ <3>2. QED BY ONLY <3>1, SMTT(10) DEF RD_KeyOnSource
 <2>8. S1 /\ S2 /\ S5 /\ S6
  BY ONLY <1>Oqe3g9S2Mh4EqLmwTNY, Sizes, Location, Design, SMTT(10), V21_Inv_P_SI5, V21_Inv_S1, V21_Inv_S2, V21_Inv_S5, V21_Inv_S6 DEF Sizes, Location, Design
 <2>SBFrame. UNCHANGED <<hw,hok,xdst,xr,xg>>

@@ -1030,7 +1030,16 @@ THEOREM Part_DAbort_02_01 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -1903,7 +1912,16 @@ THEOREM Part_DAbort_02_02 ==
  <3>1. smap' = [i \in PInst |-> [r \in Rq |-> smap[i][r]]] /\
         schoice' = [i \in PInst |-> [r \in Rq |-> schoice[i][r]]]
  BY ONLY <1>zMokmOdGw, Sizes, Location, Design, <2>3, <2>3, <1>ivFfcVr6Rc1eHuIs8, SMTT(10) DEF RD_MUpdate, RD_PFrame, Sizes, Location, Design
- <3>2. QED BY ONLY <2>1, <3>1, SMTT(20), Sizes, Location, Design DEF STypeOK, Sizes, Location, Design
+ <3>2. QED
+  <4>1. smap \in [PInst -> [Rq -> {0} \cup SPages]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>2. schoice \in [PInst -> [Rq -> BOOLEAN]]
+   BY ONLY <2>1, ZenonT(10) DEF STypeOK
+  <4>3. smap' = smap
+   BY ONLY <3>1, <4>1, SMTT(10)
+  <4>4. schoice' = schoice
+   BY ONLY <3>1, <4>2, SMTT(10)
+  <4>5. QED BY ONLY <4>3, <4>4, SMTT(10)
 <2>4. QED BY <2>2, <2>3, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 
 \* T2M-LOCAL-VISIBILITY
@@ -2674,7 +2692,10 @@ THEOREM Part_DAbort_02_02 ==
  BY ONLY <1>ouO1IATOEPWy4Lcsh, Sizes, Location, Design, <2>3, <1>eCzjL4PMdcNbssJhsk, SMTT(10) DEF Sizes, Location, Design
  <3>3b. \A x \in Xids : xdst[x] \in Pages => IsD(Loc(xdst[x]))
  BY ONLY <1>ouO1IATOEPWy4Lcsh, Sizes, Location, Design, <2>3, <1>b8FOS7RlDgygbk6kJ4t, SMTT(10) DEF Sizes, Location, Design
- <3>3. QED BY ONLY <1>ouO1IATOEPWy4Lcsh, Sizes, Location, Design, <2>3, <2>1, <2>3, <3>1, <3>2, <3>3a, <3>3b, Design, Sizes, Location, SMTT(20) DEF DAbort, DEnd, GrownOwn, instV, kV, rtV, xV, PageToG, GTo, Active, Held, OwnedBy, IsD, IsP, PInst, DInst, Inst, NL, GrownOf, GiveUpTo, FreeOrDrain, GiveUpToN, AfterEv, GFr, Rq, Gens, Xids, Sizes, Location, Design
+ <3>3. QED
+  <4>1. \A p \in Pages : pst'[p] = "quar" => pst[p] = "quar"
+   BY ONLY <1>ouO1IATOEPWy4Lcsh, SMTT(10) DEF DAbort, DEnd, PageToG, GTo, GiveUpTo, GiveUpToN
+  <4>2. QED BY ONLY <3>2, <4>1, SMTT(10)
 <2>4. RD_RegSafe BY ONLY <1>ouO1IATOEPWy4Lcsh, Sizes, Location, Design, <2>2, <2>3, SMTT(10) DEF RD_RegSafe, Sizes, Location, Design
 <2>5. QED BY ONLY <1>ouO1IATOEPWy4Lcsh, Sizes, Location, Design, <2>4, SMTT(10) DEF Sizes, Location, Design
 

@@ -2575,9 +2575,19 @@ THEOREM Part_DLaunchNext_01_02 ==
 <2>5. RD_PFrame /\ UNCHANGED xsrc
  BY <1>fzi0P6x8JrxEWFwDmi, <1>oF6AkcWhNFMHVWxkd2jLy, SMTT(10), Sizes, Location, Design DEF Sizes, Location, Design
 <2>6. RD_NoStop /\ nx' \in Int /\ nx' >= nx
- BY <2>1, Sizes, SMTT(10), Location, Design DEF DLaunchNext, ghV, instV, kV, rtV, xV, RD_NoStop, CoreTypeOK, Sizes, Location, Design
+ <3>1. UNCHANGED xV
+  BY ONLY <1>N9Lc1Msj3qZF7XvPf3, ZenonT(10) DEF DLaunchNext
+ <3>2. hw' = hw /\ nx' = nx
+  BY ONLY <3>1, SMTT(10) DEF xV
+ <3>3. nx \in 1..(MX + 1)
+  BY ONLY <2>1, ZenonT(10) DEF CoreTypeOK
+ <3>4. QED BY ONLY <3>2, <3>3, SMTT(10) DEF RD_NoStop
 <2>7. B2 => RD_KeyOnSource
- BY <1>O1T0jJ637c6, <2>1, SMTT(10), Sizes, Location, Design DEF DLaunchNext, ghV, instV, kV, rtV, xV, RD_KeyOnSource, CoreTypeOK, Sizes, Location, Design
+ <3>1. UNCHANGED xV
+  BY ONLY <1>N9Lc1Msj3qZF7XvPf3, ZenonT(10) DEF DLaunchNext
+ <3>2. xr' = xr /\ xg' = xg
+  BY ONLY <3>1, SMTT(10) DEF xV
+ <3>3. QED BY ONLY <3>2, SMTT(10) DEF RD_KeyOnSource
 <2>8. S1 /\ S2 /\ S5 /\ S6
  BY SMTT(10), V21_Inv_S1, V21_Inv_S2, V21_Inv_S5, V21_Inv_S6, Sizes, Location, Design DEF Sizes, Location, Design
 <2>9. RD_StopBack

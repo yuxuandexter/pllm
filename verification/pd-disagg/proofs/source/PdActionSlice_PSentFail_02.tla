@@ -1036,7 +1036,12 @@ THEOREM Part_PSentFail_02_02 ==
  BY ONLY <1>DxkNe0CrfqYJjDrWn2h, V22_T_hw, V22_T_ph, V22_T_rpg, SMTT(5)
 
 <2>2. K1 /\ K3 BY V21_Inv_K1, V21_Inv_K3, Sizes, Location, Design DEF Sizes, Location, Design
-<2>3. QED BY <2>1, <2>2, Design, Sizes, SMTT(10), Location DEF RP_NoNewStop, RP_DReadFrame, DInst, PInst, Inst, NL, IsP, IsD, K1, K3, EvidenceAt, PEnd, PSentFail, PSentFailBroken, PSentFailSafe, PageTo, ghV, instV, kV, recV, rtV, xV, Sizes, Location, Design
+<2>3. QED
+ <3>1. UNCHANGED <<hw, xdst, rpg>> /\ ph' = [ph EXCEPT ![i][r] = "end"] /\ IsP(i)
+  BY ONLY <1>DxkNe0CrfqYJjDrWn2h, SMTT(10) DEF PSentFail, PSentFailBroken, PSentFailSafe, xV
+ <3>2. \A j \in DInst : j \in Inst /\ j # i
+  BY ONLY <3>1, Sizes, SMTT(10) DEF DInst, Inst, NL, IsP, Sizes
+ <3>3. QED BY ONLY <2>1, <3>1, <3>2, SMTT(10) DEF RP_NoNewStop, RP_DReadFrame
 
 \* T2M-LOCAL-VISIBILITY
 
@@ -4039,7 +4044,14 @@ THEOREM Part_PSentFail_03_02 ==
  <2>4. RPB_BK7At(rpg[i][r])
   BY <2>1, <2>3, <1>zAull58zS, Sizes, Location, Design DEF Sizes, Location, Design
  <2>5. QED
-  BY <2>1, <2>2, <2>3, <2>4, SMTT(5), Sizes, Location, Design DEF RPB_BK7At, RPB_BK8At, K1, K3, RPB_ECancel, Sizes, Location, Design
+  <3>1. rpe[i][r] \in DInst
+   BY ONLY <2>1, <2>3, SMTT(5) DEF K1
+  <3>2. prefc[rpg[i][r]] = 0 /\ pqp[rpg[i][r]] = 0
+   BY ONLY <2>3, <2>4, SMTT(5) DEF RPB_BK7At
+  <3>3. RPB_ECancel(i,r) => rx[i][r] \in Xids /\ rx[i][r] < nx /\ iv[rx[i][r]] = "reg" /\ xk[rx[i][r]] = "wr"
+                            /\ xsrc[rx[i][r]] = rpg[i][r] /\ xr[rx[i][r]] = r /\ xg[rx[i][r]] = rg[i][r]
+   BY ONLY <2>1, <2>2, SMTT(5) DEF RPB_BK8At, RPB_ECancel, K3
+  <3>4. QED BY ONLY <2>3, <3>1, <3>2, <3>3, SMTT(5)
 
 \* T2M-LOCAL-VISIBILITY
 
@@ -4170,7 +4182,16 @@ THEOREM Part_PSentFail_03_02 ==
   /\ pgn'[rpg[bb_j][bb_r]] = pgn[rpg[bb_j][bb_r]]
   BY <2>3, <2>4, <1>HWNFkcTWgd4m, Sizes, Location, Design DEF Sizes, Location, Design
 <2>6. QED
-  BY <2>1, <2>2, <2>3, <2>5, ZenonT(5), Sizes, Location, Design DEF BaseReadOwnLanded, NoWriteInto, Writing, InFl, Sizes, Location, Design
+ <3>1. ph[bb_j][bb_r] \in {"run", "ovl"} =>
+         LET q == rpg[bb_j][bb_r] IN
+           /\ q \in Pages /\ NoWriteInto(q)
+           /\ \/ ~rhit[bb_j][bb_r] /\ pst[q] = "priv" /\ pr[q] = bb_r /\ pgn[q] = rg[bb_j][bb_r] /\ ptl[q] = NTok(bb_r, rg[bb_j][bb_r]) /\ pvis[q]
+              \/ rhit[bb_j][bb_r] /\ pst[q] = "shared" /\ ptl[q] = PS
+  BY ONLY <2>1, ZenonT(5) DEF BaseReadOwnLanded
+ <3>2. \A x \in Xids : Writing(x)' = Writing(x) /\ xdst'[x] = xdst[x]
+  BY ONLY <2>2, SMTT(5) DEF Writing, InFl
+ <3>3. QED
+  BY ONLY <3>1, <3>2, <2>2, <2>3, <2>5, SMTT(5) DEF NoWriteInto
 \* T2M-END R2M1863_PdRPBPP_PdEExit_ReadOwnLanded
 
 \* T2M-SCOPE R2M1865_PdRPBPP_PdEExit_SealOnlyLanded
@@ -4215,7 +4236,12 @@ THEOREM Part_PSentFail_03_02 ==
  BY ONLY <1>DxkNe0CrfqYJjDrWn2h, V22_T_hw, V22_T_ph, V22_T_rpg, SMTT(5)
 
 <2>2. K1 /\ K3 BY V21_Inv_K1, V21_Inv_K3, Sizes, Location, Design DEF Sizes, Location, Design
-<2>3. QED BY <2>1, <2>2, Design, Sizes, SMTT(10), Location DEF RP_NoNewStop, RP_DReadFrame, DInst, PInst, Inst, NL, IsP, IsD, K1, K3, EvidenceAt, PEnd, PSentFail, PSentFailBroken, PSentFailSafe, PageTo, ghV, instV, kV, recV, rtV, xV, Sizes, Location, Design
+<2>3. QED
+ <3>1. UNCHANGED <<hw, xdst, rpg>> /\ ph' = [ph EXCEPT ![i][r] = "end"] /\ IsP(i)
+  BY ONLY <1>DxkNe0CrfqYJjDrWn2h, SMTT(10) DEF PSentFail, PSentFailBroken, PSentFailSafe, xV
+ <3>2. \A j \in DInst : j \in Inst /\ j # i
+  BY ONLY <3>1, Sizes, SMTT(10) DEF DInst, Inst, NL, IsP, Sizes
+ <3>3. QED BY ONLY <2>1, <3>1, <3>2, SMTT(10) DEF RP_NoNewStop, RP_DReadFrame
 
 \* T2M-LOCAL-VISIBILITY
 

@@ -2447,7 +2447,12 @@ THEOREM Part_Cqe_03_02 ==
 <2>2. UNCHANGED <<hw, ph, ptl, rg, rpg, sfly, xdst>>
   BY SMTT(10), <1>Tzv2xO, Sizes, Location, Design DEF Sizes, Location, Design
 <2>3. QED
-  BY <2>1, <2>2, Design, Sizes, Location, <1>Uj0mi4, SMTT(10) DEF Active, AfterEv, Cqe, DInst, EvidenceAt, ExpInst, Gens, GrownP, InFl, Inst, IsD, IsP, K16, K7, K8, K9, KPinned, KSlots, Maps, NHits, NL, NTok, NoWriteInto, OwnedBy, PLens, PageTo, Pages, PinBlocks, Rq, S1, S2, T_drep, T_gen, T_hd, T_hp, T_hw, T_iv, T_kpin, T_krs, T_led, T_nx, T_pgn, T_ph, T_plt, T_pqp, T_pr, T_prefc, T_pst, T_ptl, T_pvis, T_rg, T_rhit, T_rpe, T_rpg, T_rx, T_sfly, T_sled, T_xd, T_xdst, T_xg, T_xk, T_xlt, T_xp, T_xr, T_xsrc, Tag, Writing, Xids, KPages, Sizes, Location, Design
+ <3>1. ASSUME NEW p \in Pages, pst'[p] = "priv"
+       PROVE /\ pst[p] = "priv" /\ pr'[p] = pr[p] /\ pgn'[p] = pgn[p] /\ plt'[p] = plt[p]
+             /\ led'[p] \subseteq led[p] /\ sled'[p] \subseteq sled[p]
+  BY ONLY <1>p6Fs, <2>1, <3>1, SMTT(10) DEF Cqe, EvidenceAt, PageTo, AfterEv, T_pst, T_pr, T_pgn, T_plt, T_led, T_sled
+ <3>2. QED
+  BY ONLY <2>1, <2>2, <3>1, SMTT(10) DEF K16, GrownP, NoWriteInto, Writing, InFl
 \* T2M-END R2M0022_PP_PdCell_Cqe_K16
 
 \* T2M-SCOPE R2M0023_PP_PdCell_Cqe_K3
@@ -2461,7 +2466,10 @@ THEOREM Part_Cqe_03_02 ==
 <2>2. UNCHANGED <<ph, rpg>>
   BY SMTT(10), <1>Tzv2xO, Sizes, Location, Design DEF Sizes, Location, Design
 <2>3. QED
-  BY <2>1, <2>2, Design, Sizes, Location, <1>Uj0mi4, SMTT(10) DEF Active, AfterEv, Cqe, DInst, EvidenceAt, ExpInst, ExpPage, Gens, GrownP, InitInst, InitPage, Inst, IsD, IsP, K2, K7, K8, K9, KPinned, KSlots, Maps, NHits, NL, NTok, OwnedBy, PLens, PageTo, Pages, PinBlocks, QuarNeverMapped, Rq, S1, S2, S5, T_drep, T_gen, T_hd, T_hok, T_hp, T_hw, T_iv, T_kpin, T_krs, T_led, T_nx, T_pgn, T_ph, T_plt, T_pqp, T_pr, T_prefc, T_pst, T_ptl, T_pvis, T_rg, T_rhit, T_rpe, T_rpg, T_rx, T_sfly, T_sled, T_xd, T_xdst, T_xg, T_xk, T_xlt, T_xnt, T_xp, T_xr, T_xsrc, T_xst, Tag, Xids, KPages, Sizes, Location, Design
+ <3>1. \A p \in Pages : pst'[p] = "quar" => pst[p] = "quar"
+  BY ONLY <1>Leo3RPIxazMXYFAH, <2>1, SMTT(10) DEF Cqe, EvidenceAt, PageTo, AfterEv, T_pst
+ <3>2. QED
+  BY ONLY <2>1, <2>2, <3>1, SMTT(10) DEF QuarNeverMapped, Active
 \* T2M-END R2M0024_PP_PdCell_Cqe_QuarNeverMapped
 
 \* T2M-SCOPE R2M0025_PP_PdCell_Cqe_QuarNoReg
@@ -2475,7 +2483,14 @@ THEOREM Part_Cqe_03_02 ==
 <2>2. TRUE
   BY SMTT(10), <1>Tzv2xO, Sizes, Location, Design DEF Sizes, Location, Design
 <2>3. QED
-  BY <2>1, <2>2, Design, Sizes, Location, <1>Uj0mi4, SMTT(10) DEF Active, AfterEv, Cqe, CqeHw, DInst, EvidenceAt, ExpInst, ExpPage, Gens, GrownP, InFl, InitInst, InitPage, Inst, IsD, IsP, K2, K3, K7, K8, K9, KPinned, KSlots, Maps, NHits, NL, NTok, OwnedBy, PLens, PageTo, Pages, PinBlocks, QuarNoReg, Rq, T_drep, T_gen, T_hd, T_hok, T_hp, T_hw, T_iv, T_kpin, T_krs, T_led, T_nx, T_pgn, T_ph, T_plt, T_pqp, T_pr, T_prefc, T_pst, T_ptl, T_pvis, T_rg, T_rhit, T_rpe, T_rpg, T_rx, T_sfly, T_sled, T_xd, T_xdst, T_xg, T_xk, T_xlt, T_xnt, T_xp, T_xr, T_xsrc, T_xst, Tag, Xids, KPages, Sizes, Location, Design
+ <3>1. \A p \in Pages : pst'[p] = "quar" => pst[p] = "quar"
+  BY ONLY <1>TrKOuMh8SO, <2>1, SMTT(10) DEF Cqe, EvidenceAt, PageTo, AfterEv, T_pst
+ <3>2. \A p \in Pages : led'[p] \subseteq led[p]
+  BY ONLY <1>TrKOuMh8SO, <2>1, SMTT(10) DEF Cqe, EvidenceAt, PageTo, T_led
+ <3>3. \A y \in Xids : iv'[y] = "reg" => iv[y] = "reg"
+  BY ONLY <1>TrKOuMh8SO, <2>1, SMTT(10) DEF Cqe, T_iv
+ <3>4. QED
+  BY ONLY <2>1, <3>1, <3>2, <3>3, SMTT(10) DEF QuarNoReg, T_led
 \* T2M-END R2M0025_PP_PdCell_Cqe_QuarNoReg
 
 \* T2M-SCOPE R2M0026_PP_PdCell_Cqe_S5

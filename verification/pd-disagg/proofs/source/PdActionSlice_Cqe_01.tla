@@ -1063,7 +1063,12 @@ THEOREM Part_Cqe_01_01 ==
 <2>2. UNCHANGED <<hw, ph, ptl, rg, rpg, sfly, xdst>>
   BY ONLY <1>CuHF, Sizes, Location, Design, SMTT(10), <1>qAeogR DEF Sizes, Location, Design
 <2>3. QED
-  BY ONLY <1>CuHF, Sizes, Location, Design, <2>1, <2>2, Design, Sizes, Location, <1>FeJ2oW, SMTT(10) DEF Active, AfterEv, Cqe, DInst, EvidenceAt, ExpInst, Gens, GrownP, InFl, Inst, IsD, IsP, K16, K7, K8, K9, KPinned, KSlots, Maps, NHits, NL, NTok, NoWriteInto, OwnedBy, PLens, PageTo, Pages, PinBlocks, Rq, S1, S2, jnT8ZH, wOTr_, qC4t, f9Jo, JojO, vQ8m, kyOog2, dMRAk, CQcwS, NHqB, ejARA, lwx7, nhDFh, j9ZB2, voSc, uhaZUCa, mWgRR, Oet5P, toA96a, azLu, WFFocH, DRkCp, T2_wJ, u6eb, pgoLyw, gwX1nH, FBnj, tP64Zt, oZ1G, TMQx, Og_ZB, vvyr, tOrh, Sbgpxn, Tag, Writing, Xids, KPages, Sizes, Location, Design
+ <3>1. ASSUME NEW p \in Pages, pst'[p] = "priv"
+       PROVE /\ pst[p] = "priv" /\ pr'[p] = pr[p] /\ pgn'[p] = pgn[p] /\ plt'[p] = plt[p]
+             /\ led'[p] \subseteq led[p] /\ sled'[p] \subseteq sled[p]
+  BY ONLY <1>CuHF, <2>1, <3>1, SMTT(10) DEF Cqe, EvidenceAt, PageTo, AfterEv, mWgRR, voSc, ejARA, nhDFh, CQcwS, gwX1nH
+ <3>2. QED
+  BY ONLY <2>1, <2>2, <3>1, SMTT(10) DEF K16, GrownP, NoWriteInto, Writing, InFl
 \* T2M-END R2M2212_PdROBase_PdCell_Cqe_K16
 
 
