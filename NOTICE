@@ -1,4 +1,4 @@
-pLLM (Provable LLM)
+veriserve (Verifiable LLM Serving Engine)
 
 The engine is derived from sgl-project/mini-sglang at upstream revision 9a91cfa,
 MIT License, Copyright (c) 2026 sgl-project. Upstream notices are retained.
@@ -8,7 +8,7 @@ PD ledger and glue additions, design and trace models, CPU fixtures, mathematica
 proofs, checkers and release documentation are MIT-licensed additions:
 Copyright (c) 2026 Hao AI Lab (Yuxuan Zhang, Yichao Fu, Minshen Zhang).
 The Python import namespace minisgl is retained for upstream compatibility;
-the published distribution is named pllm.
+the published distribution is named veriserve.
 
 The published engine derives from revision 319d88b. The consolidated
 pd-serving.patch rebuilds it from upstream 9a91cfa, including the prerequisite
