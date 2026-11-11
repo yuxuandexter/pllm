@@ -28,7 +28,7 @@ Design == /\ Mode \in {"push", "pull"}
                  /\ Ovl = TRUE /\ PReg = TRUE /\ Mut = "none" /\ Faults = TRUE
 ```
 
-`HComplete = "narrow"` is not a design switch of pLLM. It is an assumption about
+`HComplete = "narrow"` is not a design switch of veriserve. It is an assumption about
 the RDMA hardware and transport library: a successful WRITE completion seen by the
 initiator implies that the data has been placed in the target's memory. With
 `HComplete = "widest"`, TLC finds a `Safety` violation, so the theorem depends on
