@@ -146,8 +146,14 @@ initialization, safety and root contracts; and public-model renaming equivalence
 
 The result relies on the correctness of:
 
-- tlapm, a development build (recorded in `SUMMARY.tsv` as `efe4f2d-dirty`),
-  including its classification of trivial obligations;
+- tlapm, a development build (upstream commit `efe4f2d` with local changes,
+  recorded in `SUMMARY.tsv` as `efe4f2d-dirty`), including its classification of
+  trivial obligations. The local changes are to the build only: dependencies are
+  copied from hash-pinned local files instead of being downloaded, Isabelle, ls4
+  and Z3 4.8.9 are built for aarch64, and one line of `src/params.ml` adds an
+  optional environment variable that passes extra options to the Poly/ML process
+  that runs Isabelle. No code that generates obligations or interprets backend
+  results is changed;
 - Z3 4.8.9;
 - Zenon;
 - Isabelle;
