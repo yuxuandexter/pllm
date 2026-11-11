@@ -466,9 +466,9 @@ THEOREM Part_PExpose_01_01 ==
         /\ iv[q] = "cqe" => hw[q] \in CqeHw(q)
         /\ hw[q] = "issued" => xk[q] = "wr"
         /\ xst[q] = "revoked" => iv[q] = "nopost"
-        /\ xst[q] = "landed" => (hw[q] = "stop" /\ hok[q] /\ xlt[q] = xnt[q])   \* transfer-length consistency：只有 lt = 计划才算落地
-        /\ (xk[q] = "rd" /\ iv[q] \notin {"none", "nopost"}) => xlt[q] = xnt[q]   \* transfer-length consistency：pull 的 D 只在 lt = 计划时发 READ
-        /\ xst[q] = "failed" => IF xk[q] = "wr" THEN (hw[q] = "stop" /\ hok[q] /\ xlt[q] # xnt[q])   \* push 的 failed 只来自 BAD_LEN
+        /\ xst[q] = "landed" => (hw[q] = "stop" /\ hok[q] /\ xlt[q] = xnt[q])   \* transfer-length consistency: landed only if lt = plan
+        /\ (xk[q] = "rd" /\ iv[q] \notin {"none", "nopost"}) => xlt[q] = xnt[q]   \* transfer-length consistency: in pull, D issues READ only if lt = plan
+        /\ xst[q] = "failed" => IF xk[q] = "wr" THEN (hw[q] = "stop" /\ hok[q] /\ xlt[q] # xnt[q])   \* in push, failed comes only from BAD_LEN
                                  ELSE ((iv[q] = "cqe" /\ hw[q] = "stop" /\ ~hok[q]) \/ iv[q] = "nopost")
         /\ InFl(q) => (xst[q] = "posted" /\ (iv[q] \in {"posted", "failret"} \/ (iv[q] = "cqe" /\ hw[q] = "issued" /\ ~hok[q])))
 <2> HIDE DEF StepK3

@@ -6,7 +6,7 @@
 \* Run with run_ind.sh <tag> init step safe (CINIT=<name> picks the constant set).
 \* IndInv = TypeOK /\ Safety /\ structural conjuncts /\ reachability strengthening.
 \* Scope of the induction: Unquar = FALSE (step-1 rule), Mut = "none"; push under (HComplete narrow, HOrder widest,
-\* HVisible widest, notice, flush) = the the contract design under the reading visibility litmus must confirm; pull under widest readings + flush.
+\* HVisible widest, notice, flush) = the design under the reading that the visibility litmus must confirm; pull under widest readings + flush.
 EXTENDS PdCore
 IndNext == SNext \/ (BaseNext /\ SFollow)
 
@@ -52,10 +52,10 @@ CPushKFU == CMut("kFreeUnderRead", "push")
 CPullKFU == CMut("kFreeUnderRead", "pull")
 CPushKDE == CMut("kDoneEarly", "push")
 CPushCS  == CMut("cancelSubmitted", "push")
-\* decode growth and cancellation：PReg 超时修法的自校准（step 必须给 CTI）
+\* decode growth and cancellation: self-calibration of the PReg timeout fix (step must yield a CTI)
 CPushPNC == CMut("pEndNoCancel", "push")
 CPushDTR == CMut("drainTimeoutReg", "push")
-\* the contract：¬ok notice 当作已停证据（设计前提 HComplete narrow 之内：错误完成可以在 issued 时出现）
+\* ~ok notice treated as stop evidence (within the design premise HComplete narrow: an error completion can appear at issued)
 CPushNok == /\ PrefixSharing=FALSE /\ SPP=0 /\ HComplete = "narrow" /\ HOrder = "widest" /\ HVisible = "widest" /\ PushEv = "notice" /\ Flush = TRUE
             /\ Unquar = FALSE /\ PRel = TRUE /\ BadLen = TRUE /\ Ovl = TRUE /\ KR = 1 /\ PReg = TRUE /\ Mut = "nokFrees" /\ Faults = TRUE /\ MaxFail = 1
             /\ Mode = "push" /\ NPI = 1 /\ NDI = 1 /\ NR = 1 /\ MG = 2 /\ PPL = 1 /\ NP = 2 /\ PS = 1 /\ MX = 2
@@ -93,9 +93,9 @@ ExpInst(x)  == IF xk[x] = "wr" THEN xd[x] ELSE xp[x]
 InitInst(x) == IF xk[x] = "wr" THEN xp[x] ELSE xd[x]
 OwnedBy(p, r, g) == pst[p] \in {"priv", "drain", "quar"} /\ pr[p] = r /\ pgn[p] = g
 Maps(i, r, p) == Active(i, r) /\ rpg[i][r] = p
-NHits(p) == Cardinality({r \in Rq : ph[Loc(p)][r] \in {"run", "ovl"} /\ rhit[Loc(p)][r] /\ rpg[Loc(p)][r] = p})   \* overlapped-finish drain：ovl 的命中记录也持有引用
+NHits(p) == Cardinality({r \in Rq : ph[Loc(p)][r] \in {"run", "ovl"} /\ rhit[Loc(p)][r] /\ rpg[Loc(p)][r] = p})   \* overlapped-finish drain: hit records in ovl also hold a reference
 CqeHw(x) == IF xk[x] = "wr" /\ (HComplete = "widest" \/ ~hok[x]) THEN {"issued", "stop"} ELSE {"stop"}
-\* decode growth and cancellation（DGrow）：D 上的加页 = 私有页、不是它那个槽的记录映射页（PageStateConsistency、GrownPageConsistency）
+\* decode growth and cancellation (DGrow): grown pages on D = private pages that are not the mapped page of their slot's record (PageStateConsistency, GrownPageConsistency)
 GrownP(p) == IsD(Loc(p)) /\ pst[p] = "priv" /\ pr[p] \in Rq /\ rpg[Loc(p)][pr[p]] # p
 
 \* ================= Structural conjuncts (written before the first step check) =================
@@ -118,11 +118,11 @@ TransferRecordConsistency ==
              /\ xr[x] \in Rq /\ xg[x] \in Gens /\ xg[x] <= gen[xr[x]]
              /\ xp[x] = hp[xr[x]][xg[x]] /\ xd[x] = hd[xr[x]][xg[x]]
              /\ xnt[x] = NTok(xr[x], xg[x]) /\ xst[x] # "none"
-             /\ IF xk[x] = "wr" /\ InitPage(x) = 0 THEN xlt[x] = 0 ELSE xlt[x] \in PLens(xr[x], xg[x])   \* TransferLengthConsistency（transfer-length consistency；PReg：取消后的 nopost 有源页、有 lt）
+             /\ IF xk[x] = "wr" /\ InitPage(x) = 0 THEN xlt[x] = 0 ELSE xlt[x] \in PLens(xr[x], xg[x])   \* TransferLengthConsistency (transfer-length consistency; PReg: a nopost after cancellation has a src page and an lt)
              /\ ExpPage(x) \in Pages /\ Loc(ExpPage(x)) = ExpInst(x)
              /\ iv[x] = "none" => InitPage(x) = 0
              /\ iv[x] \notin {"none", "nopost"} => InitPage(x) # 0
-             /\ (iv[x] = "nopost" /\ InitPage(x) # 0) => (xk[x] = "wr" /\ PReg)   \* PReg：登记后被取消
+             /\ (iv[x] = "nopost" /\ InitPage(x) # 0) => (xk[x] = "wr" /\ PReg)   \* PReg: cancelled after registration
              /\ InitPage(x) # 0 => (InitPage(x) \in Pages /\ Loc(InitPage(x)) = InitInst(x))
 \* TransferStateConsistency hardware vs. initiator vs. exposer states
 TransferStateConsistency ==
@@ -132,9 +132,9 @@ TransferStateConsistency ==
         /\ iv[x] = "cqe" => hw[x] \in CqeHw(x)
         /\ hw[x] = "issued" => xk[x] = "wr"
         /\ xst[x] = "revoked" => iv[x] = "nopost"
-        /\ xst[x] = "landed" => (hw[x] = "stop" /\ hok[x] /\ xlt[x] = xnt[x])   \* transfer-length consistency：只有 lt = 计划才算落地
-        /\ (xk[x] = "rd" /\ iv[x] \notin {"none", "nopost"}) => xlt[x] = xnt[x]   \* transfer-length consistency：pull 的 D 只在 lt = 计划时发 READ
-        /\ xst[x] = "failed" => IF xk[x] = "wr" THEN (hw[x] = "stop" /\ hok[x] /\ xlt[x] # xnt[x])   \* the contract：push 的 failed 只来自 BAD_LEN
+        /\ xst[x] = "landed" => (hw[x] = "stop" /\ hok[x] /\ xlt[x] = xnt[x])   \* transfer-length consistency: landed only if lt = plan
+        /\ (xk[x] = "rd" /\ iv[x] \notin {"none", "nopost"}) => xlt[x] = xnt[x]   \* transfer-length consistency: in pull, D issues READ only if lt = plan
+        /\ xst[x] = "failed" => IF xk[x] = "wr" THEN (hw[x] = "stop" /\ hok[x] /\ xlt[x] # xnt[x])   \* in push, failed comes only from BAD_LEN
                                  ELSE ((iv[x] = "cqe" /\ hw[x] = "stop" /\ ~hok[x]) \/ iv[x] = "nopost")
         /\ InFl(x) => (xst[x] = "posted" /\ (iv[x] \in {"posted", "failret"} \/ (iv[x] = "cqe" /\ hw[x] = "issued" /\ ~hok[x])))
 \* ExactTransferLedger the ledger is exact: exposer side <-> xst posted; initiator side <-> iv posted/failret; nothing else is in a ledger
@@ -162,10 +162,10 @@ PageStateConsistency ==
         /\ pst[p] # "quar" => pqp[p] = 0
         /\ pst[p] # "shared" => prefc[p] = 0
         /\ pst[p] = "shared" => (IsD(Loc(p)) /\ led[p] = {} /\ ptl[p] = PS /\ prefc[p] = NHits(p))
-        /\ pst[p] = "drain" => (led[p] # {} \/ sled[p] # {} \/ KPinned(p))   \* KernelReadPins：钉也是在途
+        /\ pst[p] = "drain" => (led[p] # {} \/ sled[p] # {} \/ KPinned(p))   \* KernelReadPins: pins count as in flight too
         /\ pst[p] \in {"drain", "quar"} => \A r \in Rq : ~Maps(Loc(p), r, p)
         /\ pst[p] = "priv" => \/ (Maps(Loc(p), pr[p], p) /\ rg[Loc(p)][pr[p]] = pgn[p] /\ ~rhit[Loc(p)][pr[p]])
-                              \/ GrownP(p)   \* decode growth and cancellation：D 的加页（GrownPageConsistency）
+                              \/ GrownP(p)   \* decode growth and cancellation: grown pages on D (GrownPageConsistency)
 \* PrefillRecordConsistency P records
 PrefillRecordConsistency ==
       \A i \in Inst, r \in Rq :
@@ -258,17 +258,17 @@ KernelSlotConsistency ==
        \A i \in Inst, s \in KSlots :
          /\ kfly[i][s] => kpin[i][s]
          /\ (krs[i][s] # {}) <=> kpin[i][s]
-         /\ \A e \in krs[i][s] : Loc(e[3]) = i /\ e[2] <= gen[e[1]] /\ (IF e[3] \in SPages THEN PrefixSharing /\ IsP(i) /\ e[4] \in {1,4} ELSE (e[4] \in {0,1,2,3} /\ (e[4] # 0 => IsD(i))))   \* decode growth and cancellation：sh 2 / 3（加页）也只在 D
+         /\ \A e \in krs[i][s] : Loc(e[3]) = i /\ e[2] <= gen[e[1]] /\ (IF e[3] \in SPages THEN PrefixSharing /\ IsP(i) /\ e[4] \in {1,4} ELSE (e[4] \in {0,1,2,3} /\ (e[4] # 0 => IsD(i))))   \* decode growth and cancellation: sh 2 / 3 (grown pages) also only on D
 \* PinnedDataIntegrity KernelReadPins pinned data: while pinned (not only while the GPU runs) every read entry keeps the launch-time data facts
 \*   (KReadIntegrity is PinnedDataIntegrity restricted to kfly, via KernelSlotConsistency); D private entries have an empty RDMA ledger, P entries no stream op
 PinnedDataIntegrity ==
        \A i \in Inst, s \in KSlots : kpin[i][s] => \A e \in krs[i][s] :
          /\ KData(i, e)
-         /\ (IsD(i) /\ e[4] # 1) => led[e[3]] = {}   \* decode growth and cancellation：加页（sh 2 / 3）同私有页
+         /\ (IsD(i) /\ e[4] # 1) => led[e[3]] = {}   \* decode growth and cancellation: grown pages (sh 2 / 3) are treated like private pages
          /\ (IsP(i) /\ e[3] \in Pages) => sled[e[3]] = {}
 
-\* GrownPageConsistency decode growth and cancellation（DGrow）：D 上不是记录映射页的私有页 = 加页。它属于本实例上该槽当前那一代、在 run / ovl 的记录；没有任何账本条目、
-\*   没有本地流 op（不暴露、不进 RDMA）；核心记下的写进度 = 真值，只取 0（还没有步写过）或 1（某一步已写下，StreamFIFO）；没有 RDMA 写在途
+\* GrownPageConsistency decode growth and cancellation (DGrow): a private page on D that is not a record's mapped page = a grown page. It belongs to the record of this slot's current generation on this instance, in run / ovl; it has no ledger entry,
+\*   no local-stream op (not exposed, not in RDMA); the write progress recorded by the core = ground truth, only 0 (no step has written it) or 1 (some step wrote it, StreamFIFO); no RDMA write in flight
 GrownPageConsistency ==
        \A p \in Pages : GrownP(p) =>
          /\ ph[Loc(p)][pr[p]] \in {"run", "ovl"} /\ rg[Loc(p)][pr[p]] = pgn[p]
@@ -276,10 +276,10 @@ GrownPageConsistency ==
          /\ plt[p] = ptl[p] /\ ptl[p] \in {0, 1}
          /\ NoWriteInto(p)
 
-\* GrownPinGeneration decode growth and cancellation（DGrow）：被钉的加页元素（sh 2 / 3）属于一个已经提交过的代：发射时那一代的记录在 run / ovl（只有它们有加页），之后
-\*   只会走到 end 或被同槽更新的一代顶替；它的页不是那一代记录映射的页。CTI pull-growth counterexample（第一次 step，GrownPageConsistency 之后）：前态里
-\*   D 的 g2 记录还在 wait、映射页 4，读集合却有 <<1, 2, 4, 3>>；DRecvSinfo 往页 4 发 READ，PinnedDataIntegrity 的 NoWriteInto 假。不可达：sh 3 的
-\*   元素只由 KLaunch 对加页建出，那时记录已在 run，代不回退
+\* GrownPinGeneration decode growth and cancellation (DGrow): a pinned grown-page element (sh 2 / 3) belongs to a generation already committed: at launch that generation's record was in run / ovl (only those have grown pages), and afterwards
+\*   it can only go to end or be replaced by a newer generation of the same slot; its page is not that generation's mapped page. CTI pull-growth counterexample (first step run, after GrownPageConsistency): in the pre-state
+\*   D's g2 record is still in wait with mapped page 4, yet the read set holds <<1, 2, 4, 3>>; DRecvSinfo issues a READ into page 4, so NoWriteInto of PinnedDataIntegrity is false. Unreachable: sh 3
+\*   elements are created only by KLaunch for grown pages, when the record is already in run, and generations never go back
 GrownPinGeneration ==
        \A i \in Inst, s \in KSlots : kpin[i][s] => \A e \in krs[i][s] :
          e[4] \in {2, 3} =>
@@ -393,12 +393,12 @@ PullSourceHeld ==
        IF ~PrefixSharing THEN TRUE ELSE \A x \in Xids : (xk[x]="rd" /\ xst[x]="posted") =>
           x \in sentry \/ (\A p \in xsrcS[x] : <<x,p>> \in squar)
 
-\* the contract: message x-domain is an explicit structural invariant, independent of MsgU.
+\* message x-domain is an explicit structural invariant, independent of MsgU.
 \* TypeOK and Safety remain unchanged. All five message families use allocated x ids.
 MsgXDomain == \A m \in net :
   m.t \in {"sinfo","notice","nopost","revoke","relsrc"} => m.x \in Xids
 
-\* the contract: strengthen only the induction candidate, without changing Init or actions.
+\* strengthen only the induction candidate, without changing Init or actions.
 PrivateMapOwner == IF ~PrefixSharing THEN TRUE ELSE
  \A i \in PInst, r \in Rq :
   (Active(i,r) /\ smap[i][r] \in SPages /\ spst[smap[i][r]]="priv")

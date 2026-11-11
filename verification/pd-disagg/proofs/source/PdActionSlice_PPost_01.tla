@@ -2074,15 +2074,15 @@ THEOREM Part_PPost_02_01 ==
           /\ ph' = [ph EXCEPT ![i][r] = "end"] /\ rx' = [rx EXCEPT ![i][r] = m.x]
           /\ PageTo(p, FreeOrDrain(p), 0, {}, {})
           /\ UNCHANGED <<xV, net>>
-     ELSE \* PReg（= glue p_post）：只登记（iv = reg，源页进账本，WRITE 还没交给传输库，可取消）；否则登记 + 提交一步做完
+     ELSE \* PReg (= glue p_post): register only (iv = reg, the src page enters the ledger, the WRITE is not yet handed to the transfer library, cancellable); otherwise register + submit in one step
           /\ iv' = [iv EXCEPT ![m.x] = IF PReg THEN "reg" ELSE "posted"]
-          \* Unquar：到已拆除的对端不能再发（连接被拒，op 立即以失败停下、不落地）
+          \* Unquar: cannot issue to a torn-down peer (connection rejected, the op stops at once with failure and never lands)
           /\ hw' = IF PReg THEN hw ELSE [hw EXCEPT ![m.x] = IF Torn(m.x) THEN "stop" ELSE "fly"]
           /\ hok' = IF PReg THEN hok ELSE [hok EXCEPT ![m.x] = FALSE]
-          /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* transfer-length consistency：x 带的 token 数 = P 记下的数
+          /\ xsrc' = [xsrc EXCEPT ![m.x] = p] /\ xlt' = [xlt EXCEPT ![m.x] = LtOf(i, r)]   \* transfer-length consistency: token count carried by x = the count P recorded
           /\ led' = [led EXCEPT ![p] = @ \cup {m.x}]
           /\ ph' = [ph EXCEPT ![i][r] = IF PReg THEN "reg" ELSE "sent"] /\ rx' = [rx EXCEPT ![i][r] = m.x]
-          \* 变异 noticeBeforeCompletion（Mooncake#3406）：发出 WRITE 就发成功 notice（pe = 0：没看到完成事件）；PReg 下在 PSubmit 里发
+          \* mutant noticeBeforeCompletion (Mooncake#3406): send the success notice as soon as the WRITE is issued (pe = 0: completion event not seen); under PReg it is sent in PSubmit
           /\ net' = IF Mut = "noticeBeforeCompletion" /\ ~PReg
                     THEN net \cup {Msg("notice", i, m.fr, r, m.g, m.x, LtOf(i, r), 0, TRUE)} ELSE net
           /\ UNCHANGED <<pst, pr, pgn, plt, sled, prefc, pqp, xr, xg, xk, xp, xd, xdst, xnt, xst, nx>>
