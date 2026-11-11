@@ -41,7 +41,8 @@ curl http://127.0.0.1:9100/pd_stats   # inspect live PdLedger 5-state page and g
 
 ```bash
 # Check the example runtime trace with the independent Python descriptor observer and test that
-# corrupted or missing observations are rejected (Python only, no TLA+). The optional TLC conformance
+# corrupted observations are rejected and missing ones are reported as inconclusive (Python only,
+# no TLA+). The optional TLC conformance
 # check against the trace model is verification/pd-disagg/trace/check_rejected.py
 # (see verification/pd-disagg/trace/README.md for its status)
 python3 verification/pd-disagg/trace/check.py --out "$PWD/check-output"
